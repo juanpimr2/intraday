@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Bot Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>🤖 Trading Bot Dashboard</h1>
+            <div class="status-indicator">
+                <span id="status-dot" class="dot"></span>
+                <span id="status-text">Conectando...</span>
+            </div>
+        </header>
+
+        <!-- Account Info -->
+        <section class="card">
+            <h2>💼 Estado de la Cuenta</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Balance</div>
+                    <div class="stat-value" id="balance">€0.00</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Disponible</div>
+                    <div class="stat-value" id="available">€0.00</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Margen Usado</div>
+                    <div class="stat-value" id="margin-used">€0.00</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">% Margen</div>
+                    <div class="stat-value" id="margin-percent">0%</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Positions -->
+        <section class="card">
+            <h2>📊 Posiciones Abiertas (<span id="positions-count">0</span>)</h2>
+            <div id="positions-container">
+                <p class="loading">Cargando posiciones...</p>
+            </div>
+        </section>
+
+        <!-- Configuration -->
+        <section class="card">
+            <h2>⚙️ Configuración</h2>
+            <div class="config-grid" id="config-container">
+                <p class="loading">Cargando configuración...</p>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer>
+            <p>Última actualización: <span id="last-update">--:--:--</span></p>
+            <p>Auto-refresh cada 10 segundos</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
