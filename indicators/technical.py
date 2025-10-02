@@ -4,6 +4,7 @@ Indicadores técnicos para análisis de mercado
 
 import pandas as pd
 import numpy as np
+from typing import Tuple
 from config import Config
 
 
@@ -126,3 +127,123 @@ class TechnicalIndicators:
         if not pd.isna(value):
             return float(value)
         return float(series.iloc[-1])
+    
+    @staticmethod
+    def atr(df: pd.DataFrame, period: int = None) -> float:
+        """
+        Calcula el ATR (Average True Range) - mide volatilidad
+        
+        Args:
+            df: DataFrame con columnas highPrice, lowPrice, closePrice
+            period: Período del ATR (default: Config.ATR_PERIOD)
+            
+        Returns:
+            float: Valor actual del ATR
+        """
+        if period is None:
+            period = Config.ATR_PERIOD
+        
+        try:
+            high = pd.to_numeric(df['highPrice'], errors='coerce')
+            low = pd.to_numeric(df['lowPrice'], errors='coerce')
+            close = pd.to_numeric(df['closePrice'], errors='coerce')
+            
+            # True Range = max de:
+            # 1. high - low
+            # 2. abs(high - close_anterior)
+            # 3. abs(low - close_anterior)
+            tr1 = high - low
+            tr2 = abs(high - close.shift(1))
+            tr3 = abs(low - close.shift(1))
+            
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(window=period).mean()
+            
+            if not atr.empty and not pd.isna(atr.iloc[-1]):
+                return float(atr.iloc[-1])
+            return 0.0
+        except Exception as e:
+            return 0.0
+    
+    @staticmethod
+    def atr_percent(df: pd.DataFrame, period: int = None) -> float:
+        """
+        Calcula ATR como porcentaje del precio (normalizado)
+        Útil para comparar volatilidad entre diferentes activos
+        
+        Args:
+            df: DataFrame con columnas highPrice, lowPrice, closePrice
+            period: Período del ATR (default: Config.ATR_PERIOD)
+            
+        Returns:
+            float: ATR como porcentaje del precio actual
+        """
+        atr_value = TechnicalIndicators.atr(df, period)
+        
+        try:
+            current_price = float(df['closePrice'].iloc[-1])
+            if current_price > 0:
+                return (atr_value / current_price) * 100
+        except:
+            pass
+        
+        return 0.0
+    
+    @staticmethod
+    def adx(df: pd.DataFrame, period: int = None) -> Tuple[float, float, float]:
+        """
+        Calcula ADX (Average Directional Index) - mide fuerza de tendencia
+        También calcula +DI y -DI para determinar dirección
+        
+        Args:
+            df: DataFrame con highPrice, lowPrice, closePrice
+            period: Período del ADX (default: Config.ADX_PERIOD)
+            
+        Returns:
+            tuple: (adx, plus_di, minus_di)
+                - adx: Fuerza de la tendencia (0-100)
+                - plus_di: Indicador direccional positivo
+                - minus_di: Indicador direccional negativo
+        """
+        if period is None:
+            period = Config.ADX_PERIOD
+        
+        try:
+            high = pd.to_numeric(df['highPrice'], errors='coerce')
+            low = pd.to_numeric(df['lowPrice'], errors='coerce')
+            close = pd.to_numeric(df['closePrice'], errors='coerce')
+            
+            # Calcular +DM y -DM (movimientos direccionales)
+            high_diff = high.diff()
+            low_diff = -low.diff()
+            
+            plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0)
+            minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0)
+            
+            # Calcular True Range
+            tr1 = high - low
+            tr2 = abs(high - close.shift(1))
+            tr3 = abs(low - close.shift(1))
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            
+            # Suavizar con Wilder's smoothing (EMA con alpha = 1/period)
+            atr = tr.ewm(alpha=1/period, adjust=False).mean()
+            plus_di = 100 * (plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
+            minus_di = 100 * (minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr)
+            
+            # Calcular DX (Directional Index)
+            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+            
+            # Calcular ADX (suavizado del DX)
+            adx = dx.ewm(alpha=1/period, adjust=False).mean()
+            
+            if not adx.empty and not pd.isna(adx.iloc[-1]):
+                return (
+                    float(adx.iloc[-1]),
+                    float(plus_di.iloc[-1]),
+                    float(minus_di.iloc[-1])
+                )
+            return 0.0, 0.0, 0.0
+            
+        except Exception as e:
+            return 0.0, 0.0, 0.0

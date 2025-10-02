@@ -27,22 +27,55 @@ class Config:
     # ============================================
     # STOP LOSS / TAKE PROFIT
     # ============================================
-    # Operaciones BUY (Compra)
+    # MODO: 'STATIC' o 'DYNAMIC'
+    # STATIC = usa porcentajes fijos
+    # DYNAMIC = usa ATR para calcular SL/TP adaptativos
+    SL_TP_MODE = 'DYNAMIC'
+    
+    # Operaciones BUY (Compra) - MODO STATIC
     TAKE_PROFIT_PERCENT_BUY = 0.14   # 14% ganancia
     STOP_LOSS_PERCENT_BUY = 0.08     # 8% pérdida
     
-    # Operaciones SELL (Venta)
+    # Operaciones SELL (Venta) - MODO STATIC
     TAKE_PROFIT_PERCENT_SELL = 0.12  # 12% ganancia
     STOP_LOSS_PERCENT_SELL = 0.07    # 7% pérdida
+    
+    # SL/TP dinámicos basados en ATR - MODO DYNAMIC
+    ATR_MULTIPLIER_SL = 2.0     # Multiplicador ATR para Stop Loss
+    ATR_MULTIPLIER_TP = 3.0     # Multiplicador ATR para Take Profit
     
     # ============================================
     # UNIVERSO DE ACTIVOS Y HORARIOS
     # ============================================
     ASSETS = ["GOLD", "TSLA", "DE40", "SP35"]
-    TIMEFRAME = "HOUR"                # Timeframe para análisis
     START_HOUR = 9                    # Hora de inicio de trading
     END_HOUR = 22                     # Hora de fin de trading
     SCAN_INTERVAL = 900               # Intervalo de escaneo en segundos (15 min)
+    
+    # ============================================
+    # MÚLTIPLES TIMEFRAMES (MTF)
+    # ============================================
+    ENABLE_MTF = True               # Activar/desactivar análisis multi-timeframe
+    TIMEFRAME_FAST = "HOUR"         # Timeframe para señales de entrada
+    TIMEFRAME_SLOW = "HOUR_4"       # Timeframe para confirmar tendencia (HOUR_4, DAY)
+    TIMEFRAME = TIMEFRAME_FAST      # Para compatibilidad con código existente
+    
+    # ============================================
+    # FILTROS DE VOLATILIDAD (ATR)
+    # ============================================
+    MIN_ATR_PERCENT = 0.5       # % mínimo de volatilidad para operar
+    MAX_ATR_PERCENT = 5.0       # % máximo (evitar pánico/noticias)
+    OPTIMAL_ATR_MIN = 1.0       # Sweet spot mínimo
+    OPTIMAL_ATR_MAX = 3.0       # Sweet spot máximo
+    ATR_PERIOD = 14             # Período del ATR
+    
+    # ============================================
+    # FILTROS DE TENDENCIA (ADX)
+    # ============================================
+    ENABLE_ADX_FILTER = True        # Activar/desactivar filtro ADX
+    MIN_ADX_TREND = 20.0            # ADX mínimo para considerar tendencia
+    STRONG_ADX_THRESHOLD = 40.0     # ADX fuerte (boost de confianza)
+    ADX_PERIOD = 14                 # Período del ADX
     
     # ============================================
     # PARÁMETROS DE INDICADORES TÉCNICOS

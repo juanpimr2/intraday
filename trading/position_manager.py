@@ -1,5 +1,5 @@
 """
-Gestor de posiciones y margen
+Gestor de posiciones y margen con SL/TP dinámicos
 """
 
 import math
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class PositionManager:
-    """Gestiona posiciones, margen y sizing"""
+    """Gestiona posiciones, margen y sizing con SL/TP adaptativos"""
     
     def __init__(self, api_client):
         self.api = api_client
@@ -215,16 +215,178 @@ class PositionManager:
         
         return margin_by_asset
     
-    def calculate_stop_loss(self, price: float, direction: str) -> float:
-        """Calcula el nivel de stop loss"""
+    # ============================================
+    # MÉTODOS DE STOP LOSS / TAKE PROFIT
+    # ============================================
+    
+    def calculate_stop_loss(self, price: float, direction: str, atr_percent: float = None) -> float:
+        """
+        Calcula el nivel de stop loss (estático o dinámico según Config)
+        
+        Args:
+            price: Precio actual
+            direction: 'BUY' o 'SELL'
+            atr_percent: ATR como porcentaje (para modo dinámico)
+            
+        Returns:
+            float: Nivel de stop loss
+        """
+        if Config.SL_TP_MODE == 'DYNAMIC' and atr_percent is not None:
+            return self.calculate_stop_loss_dynamic(price, direction, atr_percent)
+        else:
+            return self.calculate_stop_loss_static(price, direction)
+    
+    def calculate_take_profit(self, price: float, direction: str, atr_percent: float = None) -> float:
+        """
+        Calcula el nivel de take profit (estático o dinámico según Config)
+        
+        Args:
+            price: Precio actual
+            direction: 'BUY' o 'SELL'
+            atr_percent: ATR como porcentaje (para modo dinámico)
+            
+        Returns:
+            float: Nivel de take profit
+        """
+        if Config.SL_TP_MODE == 'DYNAMIC' and atr_percent is not None:
+            return self.calculate_take_profit_dynamic(price, direction, atr_percent)
+        else:
+            return self.calculate_take_profit_static(price, direction)
+    
+    # ============================================
+    # SL/TP ESTÁTICOS (PORCENTAJES FIJOS)
+    # ============================================
+    
+    def calculate_stop_loss_static(self, price: float, direction: str) -> float:
+        """
+        Calcula SL estático usando porcentajes fijos de Config
+        
+        Args:
+            price: Precio actual
+            direction: 'BUY' o 'SELL'
+            
+        Returns:
+            float: Nivel de stop loss
+        """
         if direction == 'BUY':
             return round(price * (1 - Config.STOP_LOSS_PERCENT_BUY), 2)
         else:  # SELL
             return round(price * (1 + Config.STOP_LOSS_PERCENT_SELL), 2)
     
-    def calculate_take_profit(self, price: float, direction: str) -> float:
-        """Calcula el nivel de take profit"""
+    def calculate_take_profit_static(self, price: float, direction: str) -> float:
+        """
+        Calcula TP estático usando porcentajes fijos de Config
+        
+        Args:
+            price: Precio actual
+            direction: 'BUY' o 'SELL'
+            
+        Returns:
+            float: Nivel de take profit
+        """
         if direction == 'BUY':
             return round(price * (1 + Config.TAKE_PROFIT_PERCENT_BUY), 2)
         else:  # SELL
             return round(price * (1 - Config.TAKE_PROFIT_PERCENT_SELL), 2)
+    
+    # ============================================
+    # SL/TP DINÁMICOS (BASADOS EN ATR)
+    # ============================================
+    
+    def calculate_stop_loss_dynamic(self, price: float, direction: str, atr_percent: float) -> float:
+        """
+        Calcula SL dinámico basado en ATR (volatilidad real del mercado)
+        
+        Ventajas:
+        - Se adapta automáticamente a la volatilidad del activo
+        - SL más ajustados en mercados tranquilos
+        - SL más amplios en mercados volátiles
+        
+        Args:
+            price: Precio actual
+            direction: 'BUY' o 'SELL'
+            atr_percent: ATR como porcentaje del precio
+            
+        Returns:
+            float: Nivel de stop loss
+        """
+        # Distancia del SL = ATR * multiplicador
+        sl_distance_percent = atr_percent * Config.ATR_MULTIPLIER_SL
+        
+        # Limitar distancia mínima y máxima (para evitar extremos)
+        sl_distance_percent = max(sl_distance_percent, 1.0)   # Mínimo 1%
+        sl_distance_percent = min(sl_distance_percent, 10.0)  # Máximo 10%
+        
+        if direction == 'BUY':
+            # Para compras: SL por debajo del precio
+            sl_level = price * (1 - sl_distance_percent / 100)
+        else:  # SELL
+            # Para ventas: SL por encima del precio
+            sl_level = price * (1 + sl_distance_percent / 100)
+        
+        logger.debug(
+            f"SL dinámico calculado: Precio={price:.2f}, ATR={atr_percent:.2f}%, "
+            f"Distancia={sl_distance_percent:.2f}%, SL={sl_level:.2f}"
+        )
+        
+        return round(sl_level, 2)
+    
+    def calculate_take_profit_dynamic(self, price: float, direction: str, atr_percent: float) -> float:
+        """
+        Calcula TP dinámico basado en ATR
+        
+        El TP se coloca más lejos que el SL para mantener un ratio
+        riesgo/beneficio favorable (típicamente 1:1.5 o mejor)
+        
+        Args:
+            price: Precio actual
+            direction: 'BUY' o 'SELL'
+            atr_percent: ATR como porcentaje del precio
+            
+        Returns:
+            float: Nivel de take profit
+        """
+        # Distancia del TP = ATR * multiplicador (mayor que SL)
+        tp_distance_percent = atr_percent * Config.ATR_MULTIPLIER_TP
+        
+        # Limitar distancia mínima y máxima
+        tp_distance_percent = max(tp_distance_percent, 2.0)   # Mínimo 2%
+        tp_distance_percent = min(tp_distance_percent, 15.0)  # Máximo 15%
+        
+        if direction == 'BUY':
+            # Para compras: TP por encima del precio
+            tp_level = price * (1 + tp_distance_percent / 100)
+        else:  # SELL
+            # Para ventas: TP por debajo del precio
+            tp_level = price * (1 - tp_distance_percent / 100)
+        
+        logger.debug(
+            f"TP dinámico calculado: Precio={price:.2f}, ATR={atr_percent:.2f}%, "
+            f"Distancia={tp_distance_percent:.2f}%, TP={tp_level:.2f}"
+        )
+        
+        return round(tp_level, 2)
+    
+    def get_risk_reward_ratio(self, price: float, stop_loss: float, take_profit: float, direction: str) -> float:
+        """
+        Calcula el ratio riesgo/beneficio de una operación
+        
+        Args:
+            price: Precio de entrada
+            stop_loss: Nivel de SL
+            take_profit: Nivel de TP
+            direction: 'BUY' o 'SELL'
+            
+        Returns:
+            float: Ratio R/R (ej: 1.5 = ganarías 1.5x lo que arriesgas)
+        """
+        if direction == 'BUY':
+            risk = abs(price - stop_loss)
+            reward = abs(take_profit - price)
+        else:  # SELL
+            risk = abs(stop_loss - price)
+            reward = abs(price - take_profit)
+        
+        if risk > 0:
+            return reward / risk
+        return 0.0
