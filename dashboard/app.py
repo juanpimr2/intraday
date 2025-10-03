@@ -112,22 +112,26 @@ def get_positions():
 
 @app.route('/api/config')
 def get_config():
-    """Endpoint para obtener configuración del bot - ACTUALIZADO"""
-    return jsonify({
-        'assets': Config.ASSETS,
-        'max_positions': Config.MAX_POSITIONS,
-        'target_percent': Config.TARGET_PERCENT_OF_AVAILABLE * 100,
-        'max_risk': Config.MAX_CAPITAL_RISK * 100,
-        'timeframe': Config.TIMEFRAME,
-        'trading_hours': f"{Config.START_HOUR}:00 - {Config.END_HOUR}:00",
-        
-        # NUEVA configuración de capital
-        'capital_mode': Config.CAPITAL_MODE,
-        'max_capital_percent': Config.MAX_CAPITAL_PERCENT,
-        'max_capital_fixed': Config.MAX_CAPITAL_FIXED,
-        'distribution_mode': Config.DISTRIBUTION_MODE,
-        'size_safety_margin': Config.SIZE_SAFETY_MARGIN * 100
-    })
+    """Endpoint para obtener configuración del bot"""
+    try:
+        return jsonify({
+            'assets': Config.ASSETS,
+            'max_positions': Config.MAX_POSITIONS,
+            'target_percent': getattr(Config, 'TARGET_PERCENT_OF_AVAILABLE', 0.40) * 100,
+            'max_risk': getattr(Config, 'MAX_CAPITAL_RISK', 0.70) * 100,
+            'timeframe': Config.TIMEFRAME,
+            'trading_hours': f"{Config.START_HOUR}:00 - {Config.END_HOUR}:00"
+        })
+    except Exception as e:
+        logger.error(f"Error en get_config: {e}")
+        return jsonify({
+            'assets': [],
+            'max_positions': 0,
+            'target_percent': 0,
+            'max_risk': 0,
+            'timeframe': 'HOUR',
+            'trading_hours': '9:00 - 22:00'
+        }), 200  # Devolver 200 con datos vacíos en lugar de error
 
 @app.route('/api/config/capital', methods=['GET', 'POST'])
 def capital_config():
