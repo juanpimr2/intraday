@@ -186,29 +186,66 @@ class TradingBot:
         margin_by_asset = self.position_manager.get_margin_by_asset()
         asset_limit = balance * Config.MAX_MARGIN_PER_ASSET
         
+        logger.info(f"📋 Planificando operaciones:")
+        logger.info(f"   Margen por operación objetivo: €{per_trade_margin:.2f}")
+        logger.info(f"   Límite por activo: €{asset_limit:.2f} ({Config.MAX_MARGIN_PER_ASSET*100:.0f}% del balance)")
+        
         for analysis in analyses:
             epic = analysis['epic']
             price = safe_float(analysis['current_price'])
             direction = analysis['signal']
+            atr_pct = analysis.get('atr_percent', 0)
+            
+            logger.info(f"\n🔍 Analizando {epic}:")
+            logger.info(f"   Precio: €{price:.2f}")
+            logger.info(f"   Dirección: {direction}")
+            logger.info(f"   ATR: {atr_pct:.2f}%")
             
             # Calcular tamaño de posición
             size, details, margin_est = self.position_manager.calculate_position_size(
                 epic, price, per_trade_margin
             )
             
+            logger.info(f"   Size calculado: {size}")
+            logger.info(f"   Margen estimado: €{margin_est:.2f}")
+            
             # Verificar límite por activo
             asset_used = margin_by_asset.get(epic, 0.0)
+            total_margin_for_asset = asset_used + margin_est
             
-            if asset_used + margin_est > asset_limit:
+            logger.info(f"   Margen ya usado en {epic}: €{asset_used:.2f}")
+            logger.info(f"   Total si se ejecuta: €{total_margin_for_asset:.2f}")
+            
+            if total_margin_for_asset > asset_limit:
                 logger.warning(
-                    f"⛔ {epic}: Límite por activo excedido "
-                    f"(actual €{asset_used:.2f} + nuevo €{margin_est:.2f} > €{asset_limit:.2f})"
+                    f"   ⛔ RECHAZADA: Límite por activo excedido "
+                    f"(€{total_margin_for_asset:.2f} > €{asset_limit:.2f})"
                 )
                 continue
             
-            # Calcular SL y TP
-            stop_loss = self.position_manager.calculate_stop_loss(price, direction)
-            take_profit = self.position_manager.calculate_take_profit(price, direction)
+            # ✅ VERIFICACIÓN ADICIONAL: Margen estimado no debe exceder el objetivo en más de 2x
+            if margin_est > per_trade_margin * 2.0:
+                logger.warning(
+                    f"   ⛔ RECHAZADA: Margen estimado (€{margin_est:.2f}) es más del doble "
+                    f"del objetivo (€{per_trade_margin:.2f})"
+                )
+                continue
+            
+            # Calcular SL y TP (dinámicos si está configurado)
+            if Config.SL_TP_MODE == 'DYNAMIC' and atr_pct > 0:
+                stop_loss = self.position_manager.calculate_stop_loss(price, direction, atr_pct)
+                take_profit = self.position_manager.calculate_take_profit(price, direction, atr_pct)
+            else:
+                stop_loss = self.position_manager.calculate_stop_loss(price, direction)
+                take_profit = self.position_manager.calculate_take_profit(price, direction)
+            
+            # Calcular ratio R/R
+            rr_ratio = self.position_manager.get_risk_reward_ratio(price, stop_loss, take_profit, direction)
+            
+            logger.info(f"   SL: €{stop_loss:.2f}")
+            logger.info(f"   TP: €{take_profit:.2f}")
+            logger.info(f"   Ratio R/R: {rr_ratio:.2f}")
+            logger.info(f"   ✅ ACEPTADA para ejecución")
             
             plans.append({
                 'epic': epic,
@@ -220,25 +257,47 @@ class TradingBot:
                 'margin_est': margin_est,
                 'confidence': analysis['confidence'],
                 'reasons': analysis['reasons'],
-                'indicators': analysis['indicators']
+                'indicators': analysis['indicators'],
+                'atr_percent': atr_pct,
+                'rr_ratio': rr_ratio
             })
+        
+        logger.info(f"\n📊 Resultado: {len(plans)} operación(es) planificada(s) de {len(analyses)} señal(es)")
         
         return plans
     
     def _execute_trades(self, plans: List[Dict], margin_used: float, total_limit: float):
         """Ejecuta las operaciones planificadas"""
+        if not plans:
+            logger.info("ℹ️  No hay planes de operaciones para ejecutar")
+            return
+        
         plans.sort(key=lambda x: x['confidence'], reverse=True)
         
         executed = 0
         current_margin = margin_used
         
-        for plan in plans:
+        logger.info("\n" + "="*60)
+        logger.info("💼 EJECUTANDO OPERACIONES")
+        logger.info("="*60)
+        logger.info(f"Margen actual: €{current_margin:.2f}")
+        logger.info(f"Límite total: €{total_limit:.2f}")
+        logger.info(f"Margen disponible: €{total_limit - current_margin:.2f}")
+        logger.info(f"Operaciones a ejecutar: {len(plans)}")
+        
+        for i, plan in enumerate(plans, 1):
+            logger.info("\n" + "-"*60)
+            logger.info(f"📋 ORDEN {i}/{len(plans)}")
+            logger.info("-"*60)
+            
             new_total = current_margin + plan['margin_est']
             
             if new_total > total_limit:
                 logger.warning(
-                    f"⛔ Saltada {plan['epic']}: Límite total excedido "
-                    f"(nuevo total €{new_total:.2f} > €{total_limit:.2f})"
+                    f"⛔ SALTADA {plan['epic']}: Límite total excedido\n"
+                    f"   Margen actual: €{current_margin:.2f}\n"
+                    f"   + Nuevo margen: €{plan['margin_est']:.2f}\n"
+                    f"   = Total: €{new_total:.2f} > Límite: €{total_limit:.2f}"
                 )
                 continue
             
@@ -252,31 +311,49 @@ class TradingBot:
                 'profitLevel': plan['take_profit']
             }
             
-            # Log de la orden
-            logger.info("-"*60)
-            logger.info(f"📤 ORDEN {plan['direction']}: {plan['epic']} @ €{plan['price']:.2f}")
-            logger.info(f"   Size: {plan['size']} | SL: €{plan['stop_loss']} | TP: €{plan['take_profit']}")
-            logger.info(f"   Margen estimado: €{plan['margin_est']:.2f} | Confianza: {plan['confidence']:.0%}")
-            logger.info(f"   Razones: {', '.join(plan['reasons'])}")
+            # Log detallado de la orden
+            logger.info(f"📤 {plan['direction']} {plan['epic']}")
+            logger.info(f"   Precio entrada: €{plan['price']:.2f}")
+            logger.info(f"   Tamaño: {plan['size']} unidades")
+            logger.info(f"   Stop Loss: €{plan['stop_loss']:.2f}")
+            logger.info(f"   Take Profit: €{plan['take_profit']:.2f}")
+            logger.info(f"   Margen estimado: €{plan['margin_est']:.2f}")
+            logger.info(f"   Confianza: {plan['confidence']:.0%}")
+            
+            if plan.get('atr_percent'):
+                logger.info(f"   ATR: {plan['atr_percent']:.2f}%")
+            
+            if plan.get('rr_ratio'):
+                logger.info(f"   Ratio R/R: {plan['rr_ratio']:.2f}")
+            
+            logger.info(f"   Razones: {', '.join(plan['reasons'][:3])}")  # Primeras 3 razones
             
             # Ejecutar orden
+            logger.info("   ⏳ Enviando orden a la API...")
             result = self.api.place_order(order_data)
             
             if result:
                 deal_ref = result.get('dealReference', 'n/a')
-                logger.info(f"✅ Orden ejecutada - Deal ID: {deal_ref}")
+                logger.info(f"   ✅ EJECUTADA - Deal ID: {deal_ref}")
                 current_margin += plan['margin_est']
                 executed += 1
             else:
-                logger.error(f"❌ Error ejecutando orden")
+                logger.error(f"   ❌ ERROR en la ejecución")
             
             time.sleep(1)  # Rate limiting
         
+        # Resumen final
+        logger.info("\n" + "="*60)
+        logger.info("📊 RESUMEN DE EJECUCIÓN")
         logger.info("="*60)
-        logger.info(f"📊 RESUMEN: {executed}/{len(plans)} órdenes ejecutadas")
-        logger.info(f"💰 Margen estimado tras ejecuciones: €{current_margin:.2f} (límite €{total_limit:.2f})")
-        logger.info("="*60)
-    
+        logger.info(f"✅ Ejecutadas: {executed}/{len(plans)} orden(es)")
+        logger.info(f"💰 Margen usado inicialmente: €{margin_used:.2f}")
+        logger.info(f"💰 Margen tras ejecuciones: €{current_margin:.2f}")
+        logger.info(f"📈 Margen añadido: €{current_margin - margin_used:.2f}")
+        logger.info(f"🎯 Margen disponible restante: €{total_limit - current_margin:.2f}")
+        logger.info(f"📊 Utilización: {(current_margin/total_limit)*100:.1f}%")
+        logger.info("="*60 + "\n")  
+
     def is_trading_hours(self) -> bool:
         """Verifica si estamos en horario de trading"""
         now = datetime.now()

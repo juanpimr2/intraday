@@ -151,6 +151,9 @@ class PositionManager:
         """
         Calcula el tamaño de posición para un margen objetivo
         
+        CAMBIO PRINCIPAL: Ahora calcula correctamente el size para aproximarse al target_margin
+        sin exceder los límites por activo.
+        
         Args:
             epic: Identificador del activo
             price: Precio actual
@@ -164,26 +167,63 @@ class PositionManager:
         
         details = self.get_market_details(epic)
         
-        # Calcular tamaño aproximado
-        if details.get('marginRate'):
-            size = target_margin / max(price * details['marginRate'], 1e-9)
-        elif details.get('leverage'):
-            size = (target_margin * details['leverage']) / max(price, 1e-9)
-        else:
-            margin_rate = 0.20 if looks_like_equity(epic) else 0.05
-            size = target_margin / max(price * margin_rate, 1e-9)
-        
-        # Ajustar al step size
+        # Obtener parámetros de sizing
         step = safe_float(details.get('stepSize', 0.01), 0.01)
         min_size = safe_float(details.get('minSize', Config.MIN_POSITION_SIZE))
         precision = int(safe_float(details.get('precision', 2)))
         
-        size = math.floor(size / step) * step
+        # Calcular margen rate efectivo
+        if details.get('marginRate'):
+            effective_margin_rate = details['marginRate']
+        elif details.get('leverage') and details['leverage'] > 0:
+            effective_margin_rate = 1.0 / details['leverage']
+        else:
+            effective_margin_rate = 0.20 if looks_like_equity(epic) else 0.05
+        
+        # Calcular tamaño para el target_margin
+        # Fórmula: size = target_margin / (price * margin_rate)
+        size_for_target = target_margin / max(price * effective_margin_rate, 1e-9)
+        
+        # Ajustar al step size (redondeando hacia ABAJO para no exceder)
+        size = math.floor(size_for_target / step) * step
+        
+        # Aplicar tamaño mínimo
         size = max(size, min_size)
+        
+        # Aplicar precisión
         size = round(size, precision)
         
-        # Calcular margen estimado con el tamaño ajustado
+        # Calcular margen estimado REAL con el tamaño ajustado
         margin_est = self.calculate_margin(price, size, details, epic)
+        
+        logger.debug(
+            f"{epic}: Size calculado={size:.{precision}f}, "
+            f"Margen estimado=€{margin_est:.2f}, Target=€{target_margin:.2f}"
+        )
+        
+        # Verificar si aún excede mucho el target
+        if margin_est > target_margin * 1.2:  # Si excede en más del 20%
+            logger.warning(
+                f"⚠️  {epic}: Margen estimado (€{margin_est:.2f}) excede objetivo (€{target_margin:.2f}). "
+                f"Ajustando..."
+            )
+            
+            # Recalcular con 80% del target para dar margen de seguridad
+            adjusted_target = target_margin * 0.8
+            size_adjusted = adjusted_target / max(price * effective_margin_rate, 1e-9)
+            
+            # Re-ajustar
+            size = math.floor(size_adjusted / step) * step
+            size = max(size, min_size)
+            size = round(size, precision)
+            
+            # Recalcular margen FINAL
+            margin_est = self.calculate_margin(price, size, details, epic)
+            
+            logger.info(
+                f"✅ {epic}: Size ajustado a {size:.{precision}f}, "
+                f"Nuevo margen: €{margin_est:.2f}"
+            )
         
         return size, details, margin_est
     
