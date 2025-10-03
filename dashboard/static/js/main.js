@@ -15,6 +15,17 @@ function updateTimestamp() {
     document.getElementById('last-update').textContent = now.toLocaleTimeString('es-ES');
 }
 
+// Función para mostrar notificaciones
+function showToast(message, type = 'info') {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.className = `toast toast-${type} show`;
+    
+    setTimeout(() => {
+        toast.className = 'toast';
+    }, 3000);
+}
+
 // Función para actualizar cuenta
 async function updateAccount() {
     try {
@@ -132,13 +143,19 @@ async function updateStatus() {
         
         const statusDot = document.getElementById('status-dot');
         const statusText = document.getElementById('status-text');
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
         
-        if (data.status === 'running') {
+        if (data.running) {
             statusDot.className = 'dot online';
             statusText.textContent = data.is_trading_hours ? '🟢 Operando' : '🟡 Esperando horario';
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
         } else {
             statusDot.className = 'dot offline';
-            statusText.textContent = '🔴 Detenido';
+            statusText.textContent = '🔴 Pausado';
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
         }
         
     } catch (error) {
@@ -147,6 +164,80 @@ async function updateStatus() {
         const statusText = document.getElementById('status-text');
         statusDot.className = 'dot offline';
         statusText.textContent = '🔴 Error de conexión';
+    }
+}
+
+// ============================================
+// CONTROL DEL BOT
+// ============================================
+
+async function startBot() {
+    try {
+        showToast('Iniciando bot...', 'info');
+        const response = await fetch('/api/bot/start', { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('✅ Bot iniciado correctamente', 'success');
+            await updateStatus();
+        } else {
+            showToast('❌ Error al iniciar bot', 'error');
+        }
+    } catch (error) {
+        console.error('Error iniciando bot:', error);
+        showToast('❌ Error de conexión', 'error');
+    }
+}
+
+async function stopBot() {
+    try {
+        showToast('Pausando bot...', 'info');
+        const response = await fetch('/api/bot/stop', { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('⏸️ Bot pausado correctamente', 'success');
+            await updateStatus();
+        } else {
+            showToast('❌ Error al pausar bot', 'error');
+        }
+    } catch (error) {
+        console.error('Error pausando bot:', error);
+        showToast('❌ Error de conexión', 'error');
+    }
+}
+
+// ============================================
+// EXPORT DE DATOS
+// ============================================
+
+async function exportBacktest() {
+    try {
+        showToast('Descargando backtest results...', 'info');
+        window.location.href = '/api/export/backtest';
+    } catch (error) {
+        console.error('Error exportando backtest:', error);
+        showToast('❌ Error al exportar', 'error');
+    }
+}
+
+async function exportTrades() {
+    try {
+        showToast('Descargando trading history...', 'info');
+        window.location.href = '/api/export/trades';
+    } catch (error) {
+        console.error('Error exportando trades:', error);
+        showToast('❌ Error al exportar', 'error');
+    }
+}
+
+async function exportLogs() {
+    try {
+        showToast('Descargando logs...', 'info');
+        window.location.href = '/api/export/logs';
+    } catch (error) {
+        console.error('Error exportando logs:', error);
+        showToast('❌ Error al exportar', 'error');
     }
 }
 

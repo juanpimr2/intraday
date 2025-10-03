@@ -26,6 +26,8 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 20px;
 }
 
 .header h1 {
@@ -35,6 +37,12 @@ body {
     -webkit-text-fill-color: transparent;
 }
 
+.header-controls {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+}
+
 .status-indicator {
     display: flex;
     align-items: center;
@@ -42,6 +50,11 @@ body {
     padding: 10px 20px;
     background: #f0f0f0;
     border-radius: 25px;
+}
+
+.bot-controls {
+    display: flex;
+    gap: 10px;
 }
 
 .dot {
@@ -64,6 +77,49 @@ body {
     50% { opacity: 0.5; }
 }
 
+/* Buttons */
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.btn-success {
+    background: #10b981;
+    color: white;
+}
+
+.btn-danger {
+    background: #ef4444;
+    color: white;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.btn-secondary {
+    background: #6b7280;
+    color: white;
+}
+
 .card {
     background: white;
     padding: 30px;
@@ -76,6 +132,17 @@ body {
     margin-bottom: 20px;
     color: #667eea;
     font-size: 1.5rem;
+}
+
+.card-header-with-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.card-header-with-actions h2 {
+    margin-bottom: 0;
 }
 
 .stats-grid {
@@ -173,10 +240,49 @@ body {
     color: #333;
 }
 
+.export-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+}
+
 .loading {
     text-align: center;
     color: #999;
     font-style: italic;
+}
+
+/* Toast Notifications */
+.toast {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    padding: 15px 25px;
+    background: #333;
+    color: white;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+    opacity: 0;
+    transform: translateY(20px);
+    transition: all 0.3s ease;
+    z-index: 1000;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast-success {
+    background: #10b981;
+}
+
+.toast-error {
+    background: #ef4444;
+}
+
+.toast-info {
+    background: #3b82f6;
 }
 
 footer {
@@ -194,10 +300,24 @@ footer p {
     .header {
         flex-direction: column;
         text-align: center;
-        gap: 15px;
+    }
+    
+    .header-controls {
+        flex-direction: column;
+        width: 100%;
+    }
+    
+    .bot-controls {
+        width: 100%;
+        justify-content: center;
     }
     
     .stats-grid {
         grid-template-columns: 1fr;
+    }
+    
+    .card-header-with-actions {
+        flex-direction: column;
+        gap: 15px;
     }
 }

@@ -1,19 +1,23 @@
 """
-Dashboard web para monitorear el bot de trading
+Dashboard web mejorado para monitorear y controlar el bot de trading
 """
 
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, send_file, request
 import logging
+import os
+import pandas as pd
 from datetime import datetime
 from api.capital_client import CapitalClient
 from config import Config
 from utils.helpers import safe_float
+from utils.bot_controller import BotController
 
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
-# Cliente API global
+# Cliente API y controlador globales
 api_client = None
+bot_controller = BotController()
 
 
 def get_api_client():
@@ -70,17 +74,32 @@ def get_positions():
     formatted_positions = []
     for pos in positions:
         position_data = pos.get('position', {})
-        market = pos.get('market', {})
+        market_data = pos.get('market', {})
+        
+        # Epic
+        epic = market_data.get('epic') or market_data.get('instrumentName') or position_data.get('epic') or 'Unknown'
+        
+        # Take Profit - Buscar en múltiples lugares
+        limit_level = (
+            safe_float(position_data.get('limitLevel', 0)) or
+            safe_float(position_data.get('profitLevel', 0)) or
+            safe_float(position_data.get('limitPrice', 0)) or
+            safe_float(position_data.get('limit', 0)) or
+            0
+        )
+        
+        if limit_level == 0 and 'limit' in position_data and isinstance(position_data['limit'], dict):
+            limit_level = safe_float(position_data['limit'].get('level', 0))
         
         formatted_positions.append({
-            'epic': position_data.get('epic', 'Unknown'),
+            'epic': epic,
             'direction': position_data.get('direction', 'Unknown'),
             'size': safe_float(position_data.get('size', 0)),
             'level': safe_float(position_data.get('level', 0)),
             'currency': position_data.get('currency', 'EUR'),
             'createdDate': position_data.get('createdDate', ''),
             'stopLevel': safe_float(position_data.get('stopLevel', 0)),
-            'limitLevel': safe_float(position_data.get('limitLevel', 0)),
+            'limitLevel': limit_level,
             'dealId': position_data.get('dealId', '')
         })
     
@@ -113,12 +132,159 @@ def get_status():
         Config.START_HOUR <= now.hour < Config.END_HOUR
     )
     
+    # Obtener estado del controlador
+    bot_state = bot_controller.get_status()
+    
     return jsonify({
-        'status': 'running',
+        'status': 'running' if bot_state['running'] else 'stopped',
+        'running': bot_state['running'],
+        'manual_override': bot_state.get('manual_override', False),
         'is_trading_hours': is_trading_hours,
         'current_time': now.isoformat(),
-        'next_scan': 'In progress' if is_trading_hours else 'Waiting for trading hours'
+        'next_scan': 'In progress' if (is_trading_hours and bot_state['running']) else 'Paused'
     })
+
+
+# ============================================
+# CONTROL DEL BOT
+# ============================================
+
+@app.route('/api/bot/start', methods=['POST'])
+def start_bot():
+    """Inicia el bot manualmente"""
+    try:
+        bot_controller.start_bot()
+        return jsonify({
+            'success': True,
+            'message': 'Bot iniciado correctamente',
+            'status': 'running'
+        })
+    except Exception as e:
+        logger.error(f"Error iniciando bot: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/bot/stop', methods=['POST'])
+def stop_bot():
+    """Detiene el bot manualmente"""
+    try:
+        bot_controller.stop_bot()
+        return jsonify({
+            'success': True,
+            'message': 'Bot detenido correctamente',
+            'status': 'stopped'
+        })
+    except Exception as e:
+        logger.error(f"Error deteniendo bot: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+# ============================================
+# EXPORT DE DATOS
+# ============================================
+
+@app.route('/api/export/trades')
+def export_trades():
+    """Exporta historial de trades a CSV"""
+    try:
+        # Buscar archivo de log de trades
+        log_file = 'trades_history.csv'
+        
+        if os.path.exists(log_file):
+            return send_file(
+                log_file,
+                mimetype='text/csv',
+                as_attachment=True,
+                download_name=f'trades_history_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+            )
+        else:
+            # Si no existe, crear uno con posiciones actuales
+            api = get_api_client()
+            if not api:
+                return jsonify({'error': 'No autenticado'}), 401
+            
+            positions = api.get_positions()
+            if not positions:
+                return jsonify({'error': 'No hay datos para exportar'}), 404
+            
+            # Crear DataFrame temporal
+            data = []
+            for pos in positions:
+                pos_data = pos.get('position', {})
+                market_data = pos.get('market', {})
+                data.append({
+                    'Epic': market_data.get('epic', 'Unknown'),
+                    'Direction': pos_data.get('direction'),
+                    'Size': pos_data.get('size'),
+                    'Entry Price': pos_data.get('level'),
+                    'Stop Loss': pos_data.get('stopLevel'),
+                    'Take Profit': pos_data.get('limitLevel', 0),
+                    'Created Date': pos_data.get('createdDate'),
+                    'Deal ID': pos_data.get('dealId')
+                })
+            
+            df = pd.DataFrame(data)
+            temp_file = f'temp_trades_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+            df.to_csv(temp_file, index=False)
+            
+            return send_file(
+                temp_file,
+                mimetype='text/csv',
+                as_attachment=True,
+                download_name=f'current_positions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+            )
+    
+    except Exception as e:
+        logger.error(f"Error exportando trades: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/export/backtest')
+def export_backtest():
+    """Exporta resultados de backtesting"""
+    try:
+        backtest_file = 'backtest_results.csv'
+        
+        if not os.path.exists(backtest_file):
+            return jsonify({'error': 'No hay resultados de backtesting disponibles'}), 404
+        
+        return send_file(
+            backtest_file,
+            mimetype='text/csv',
+            as_attachment=True,
+            download_name=f'backtest_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        )
+    
+    except Exception as e:
+        logger.error(f"Error exportando backtest: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/export/logs')
+def export_logs():
+    """Exporta logs del bot"""
+    try:
+        log_file = 'intraday_trading_bot.log'
+        
+        if not os.path.exists(log_file):
+            return jsonify({'error': 'No hay logs disponibles'}), 404
+        
+        return send_file(
+            log_file,
+            mimetype='text/plain',
+            as_attachment=True,
+            download_name=f'bot_logs_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        )
+    
+    except Exception as e:
+        logger.error(f"Error exportando logs: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 def run_dashboard(host='0.0.0.0', port=5000, debug=False):

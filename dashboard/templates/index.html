@@ -11,9 +11,15 @@
         <!-- Header -->
         <header class="header">
             <h1>🤖 Trading Bot Dashboard</h1>
-            <div class="status-indicator">
-                <span id="status-dot" class="dot"></span>
-                <span id="status-text">Conectando...</span>
+            <div class="header-controls">
+                <div class="status-indicator">
+                    <span id="status-dot" class="dot"></span>
+                    <span id="status-text">Conectando...</span>
+                </div>
+                <div class="bot-controls">
+                    <button id="start-btn" class="btn btn-success" onclick="startBot()">▶️ Iniciar</button>
+                    <button id="stop-btn" class="btn btn-danger" onclick="stopBot()">⏸️ Pausar</button>
+                </div>
             </div>
         </header>
 
@@ -42,7 +48,10 @@
 
         <!-- Positions -->
         <section class="card">
-            <h2>📊 Posiciones Abiertas (<span id="positions-count">0</span>)</h2>
+            <div class="card-header-with-actions">
+                <h2>📊 Posiciones Abiertas (<span id="positions-count">0</span>)</h2>
+                <button class="btn btn-secondary" onclick="exportTrades()">📥 Export Trades</button>
+            </div>
             <div id="positions-container">
                 <p class="loading">Cargando posiciones...</p>
             </div>
@@ -56,12 +65,31 @@
             </div>
         </section>
 
+        <!-- Export Section -->
+        <section class="card">
+            <h2>📤 Exportar Datos</h2>
+            <div class="export-grid">
+                <button class="btn btn-primary" onclick="exportBacktest()">
+                    📊 Backtest Results
+                </button>
+                <button class="btn btn-primary" onclick="exportTrades()">
+                    💼 Trading History
+                </button>
+                <button class="btn btn-primary" onclick="exportLogs()">
+                    📝 Bot Logs
+                </button>
+            </div>
+        </section>
+
         <!-- Footer -->
         <footer>
             <p>Última actualización: <span id="last-update">--:--:--</span></p>
             <p>Auto-refresh cada 10 segundos</p>
         </footer>
     </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast"></div>
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
