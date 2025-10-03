@@ -86,7 +86,16 @@ class PositionManager:
         margin_rate = deep_search(data, ['marginRate', 'marginFactor'])
         
         try:
-            details['marginRate'] = float(margin_rate) if margin_rate is not None else None
+            if margin_rate is not None:
+                margin_rate_float = float(margin_rate)
+                # 🔧 FIX: Si marginRate viene como porcentaje (>1), convertir a decimal
+                if margin_rate_float > 1:
+                    details['marginRate'] = margin_rate_float / 100
+                    logger.info(f"{epic}: marginRate {margin_rate_float}% → {details['marginRate']}")
+                else:
+                    details['marginRate'] = margin_rate_float
+            else:
+                details['marginRate'] = None
         except:
             details['marginRate'] = None
         
@@ -106,9 +115,10 @@ class PositionManager:
         # Fallback conservador si no hay leverage ni marginRate
         if not details['marginRate'] and not details['leverage']:
             details['marginRate'] = 0.20 if looks_like_equity(epic) else 0.05
+            logger.info(f"{epic}: Usando marginRate fallback {details['marginRate']*100}%")
         
         return details
-    
+
     def _fallback_market_details(self, epic: str) -> Dict:
         """Detalles de mercado con fallback conservador"""
         return {

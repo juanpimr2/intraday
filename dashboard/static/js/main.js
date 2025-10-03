@@ -47,7 +47,7 @@ async function updateAccount() {
     }
 }
 
-// Función para actualizar posiciones
+// Función para actualizar posiciones - MEJORADA
 async function updatePositions() {
     try {
         const response = await fetch('/api/positions');
@@ -55,6 +55,7 @@ async function updatePositions() {
         
         if (data.error) {
             console.error('Error:', data.error);
+            showToast('Error obteniendo posiciones', 'error');
             return;
         }
         
@@ -70,17 +71,83 @@ async function updatePositions() {
         let html = '';
         data.positions.forEach(pos => {
             const directionClass = pos.direction.toLowerCase();
+            
+            // ============================================
+            // EPIC - Detectar si es "Unknown"
+            // ============================================
+            let epicDisplay = pos.epic;
+            let epicWarning = '';
+            
+            if (pos.epic === 'Unknown' || !pos.epic) {
+                epicDisplay = '⚠️ Unknown';
+                epicWarning = '<div class="warning-badge">⚠️ Epic no detectado</div>';
+            }
+            
+            // ============================================
+            // TAKE PROFIT - Detectar si falta
+            // ============================================
+            let tpDisplay = 'N/A';
+            let tpWarning = '';
+            
+            if (pos.limitLevel && pos.limitLevel > 0) {
+                tpDisplay = formatCurrency(pos.limitLevel);
+            } else {
+                tpDisplay = '⚠️ N/A';
+                tpWarning = '<span class="text-warning"> (no configurado)</span>';
+            }
+            
+            // ============================================
+            // STOP LOSS - Detectar si falta
+            // ============================================
+            let slDisplay = 'N/A';
+            let slWarning = '';
+            
+            if (pos.stopLevel && pos.stopLevel > 0) {
+                slDisplay = formatCurrency(pos.stopLevel);
+            } else {
+                slDisplay = '⚠️ N/A';
+                slWarning = '<span class="text-warning"> (no configurado)</span>';
+            }
+            
+            // ============================================
+            // CALCULAR DURACIÓN
+            // ============================================
+            let durationDisplay = '';
+            if (pos.createdDate) {
+                try {
+                    const created = new Date(pos.createdDate);
+                    const now = new Date();
+                    const diffMs = now - created;
+                    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+                    const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                    
+                    if (diffHours > 0) {
+                        durationDisplay = `${diffHours}h ${diffMinutes}m`;
+                    } else {
+                        durationDisplay = `${diffMinutes}m`;
+                    }
+                } catch (e) {
+                    durationDisplay = 'N/A';
+                }
+            }
+            
+            // ============================================
+            // RENDERIZAR HTML
+            // ============================================
             html += `
-                <div class="position-item">
+                <div class="position-item ${pos.epic === 'Unknown' ? 'position-warning' : ''}">
                     <div class="position-header">
-                        <span class="position-epic">${pos.epic}</span>
+                        <span class="position-epic">${epicDisplay}</span>
                         <span class="position-direction ${directionClass}">${pos.direction}</span>
                     </div>
+                    ${epicWarning}
                     <div class="position-details">
                         <div><strong>Size:</strong> ${pos.size}</div>
                         <div><strong>Entry:</strong> ${formatCurrency(pos.level)}</div>
-                        <div><strong>Stop Loss:</strong> ${pos.stopLevel > 0 ? formatCurrency(pos.stopLevel) : 'N/A'}</div>
-                        <div><strong>Take Profit:</strong> ${pos.limitLevel > 0 ? formatCurrency(pos.limitLevel) : 'N/A'}</div>
+                        <div><strong>Stop Loss:</strong> ${slDisplay}${slWarning}</div>
+                        <div><strong>Take Profit:</strong> ${tpDisplay}${tpWarning}</div>
+                        ${durationDisplay ? `<div><strong>Duración:</strong> ${durationDisplay}</div>` : ''}
+                        ${pos.dealId ? `<div><strong>Deal ID:</strong> ${pos.dealId}</div>` : ''}
                     </div>
                 </div>
             `;
@@ -90,6 +157,7 @@ async function updatePositions() {
         
     } catch (error) {
         console.error('Error actualizando posiciones:', error);
+        showToast('Error de conexión al obtener posiciones', 'error');
     }
 }
 

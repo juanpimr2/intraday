@@ -409,3 +409,34 @@ footer p {
         font-size: 0.9rem;
     }
 }
+
+/* ============================================
+   Estilos para posiciones con problemas
+   AGREGAR AL FINAL del archivo style.css
+   ============================================ */
+
+.position-warning {
+    border-left: 4px solid #f59e0b !important;
+    background: #fffbeb !important;
+}
+
+.warning-badge {
+    background: #fef3c7;
+    border: 1px solid #f59e0b;
+    color: #92400e;
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-size: 0.85rem;
+    margin-bottom: 10px;
+    display: inline-block;
+}
+
+.text-warning {
+    color: #f59e0b;
+    font-size: 0.85rem;
+    font-style: italic;
+}
+
+.position-item.position-warning .position-epic {
+    color: #f59e0b;
+}

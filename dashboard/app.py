@@ -64,33 +64,102 @@ def get_account():
 
 @app.route('/api/positions')
 def get_positions():
-    """Endpoint para obtener posiciones abiertas"""
+    """Endpoint para obtener posiciones abiertas - MEJORADO"""
     api = get_api_client()
     if not api:
         return jsonify({'error': 'No autenticado'}), 401
     
     positions = api.get_positions()
     
+    # 🔍 DEBUG: Log de la estructura completa (primera posición)
+    if positions:
+        logger.info("="*60)
+        logger.info("📋 DEBUG: Estructura de posición de la API")
+        logger.info("="*60)
+        import json
+        logger.info(json.dumps(positions[0], indent=2, default=str))
+        logger.info("="*60)
+    
     formatted_positions = []
     for pos in positions:
         position_data = pos.get('position', {})
         market_data = pos.get('market', {})
         
-        # Epic
-        epic = market_data.get('epic') or market_data.get('instrumentName') or position_data.get('epic') or 'Unknown'
+        # ============================================
+        # EPIC - Buscar en TODOS los lugares posibles
+        # ============================================
+        epic = None
         
-        # Take Profit - Buscar en múltiples lugares
-        limit_level = (
-            safe_float(position_data.get('limitLevel', 0)) or
-            safe_float(position_data.get('profitLevel', 0)) or
-            safe_float(position_data.get('limitPrice', 0)) or
-            safe_float(position_data.get('limit', 0)) or
-            0
-        )
+        # Opción 1: market.epic
+        if 'epic' in market_data and market_data['epic']:
+            epic = market_data['epic']
+            logger.debug(f"Epic encontrado en market.epic: {epic}")
         
-        if limit_level == 0 and 'limit' in position_data and isinstance(position_data['limit'], dict):
-            limit_level = safe_float(position_data['limit'].get('level', 0))
+        # Opción 2: market.instrumentName
+        elif 'instrumentName' in market_data and market_data['instrumentName']:
+            epic = market_data['instrumentName']
+            logger.debug(f"Epic encontrado en market.instrumentName: {epic}")
         
+        # Opción 3: position.epic
+        elif 'epic' in position_data and position_data['epic']:
+            epic = position_data['epic']
+            logger.debug(f"Epic encontrado en position.epic: {epic}")
+        
+        # Opción 4: position.instrumentName
+        elif 'instrumentName' in position_data and position_data['instrumentName']:
+            epic = position_data['instrumentName']
+            logger.debug(f"Epic encontrado en position.instrumentName: {epic}")
+        
+        # Opción 5: Buscar en el root
+        elif 'epic' in pos and pos['epic']:
+            epic = pos['epic']
+            logger.debug(f"Epic encontrado en root: {epic}")
+        
+        # Si no se encuentra, usar 'Unknown' pero loggear
+        if not epic:
+            epic = 'Unknown'
+            logger.warning(f"⚠️  Epic no encontrado. Position data keys: {list(position_data.keys())}")
+            logger.warning(f"⚠️  Market data keys: {list(market_data.keys())}")
+        
+        # ============================================
+        # TAKE PROFIT (limitLevel) - Buscar en todos los lugares
+        # ============================================
+        limit_level = 0.0
+        
+        # Opción 1: position.limitLevel
+        if position_data.get('limitLevel'):
+            limit_level = safe_float(position_data.get('limitLevel'))
+            logger.debug(f"TP encontrado en position.limitLevel: {limit_level}")
+        
+        # Opción 2: position.profitLevel
+        elif position_data.get('profitLevel'):
+            limit_level = safe_float(position_data.get('profitLevel'))
+            logger.debug(f"TP encontrado en position.profitLevel: {limit_level}")
+        
+        # Opción 3: position.limit.level (estructura anidada)
+        elif 'limit' in position_data and isinstance(position_data['limit'], dict):
+            if 'level' in position_data['limit']:
+                limit_level = safe_float(position_data['limit']['level'])
+                logger.debug(f"TP encontrado en position.limit.level: {limit_level}")
+        
+        # Opción 4: position.limitPrice
+        elif position_data.get('limitPrice'):
+            limit_level = safe_float(position_data.get('limitPrice'))
+            logger.debug(f"TP encontrado en position.limitPrice: {limit_level}")
+        
+        # Opción 5: position.takeProfit
+        elif position_data.get('takeProfit'):
+            limit_level = safe_float(position_data.get('takeProfit'))
+            logger.debug(f"TP encontrado en position.takeProfit: {limit_level}")
+        
+        # Si no se encuentra, loggear
+        if limit_level == 0.0:
+            logger.warning(f"⚠️  Take Profit no encontrado para {epic}")
+            logger.warning(f"⚠️  Position data keys: {list(position_data.keys())}")
+        
+        # ============================================
+        # Formatear posición
+        # ============================================
         formatted_positions.append({
             'epic': epic,
             'direction': position_data.get('direction', 'Unknown'),
@@ -131,106 +200,27 @@ def get_config():
             'max_risk': 0,
             'timeframe': 'HOUR',
             'trading_hours': '9:00 - 22:00'
-        }), 200  # Devolver 200 con datos vacíos en lugar de error
+        }), 200
 
-@app.route('/api/config/capital', methods=['GET', 'POST'])
-def capital_config():
-    """Gestiona configuración de capital (GET y POST)"""
-    
-    if request.method == 'GET':
-        # Obtener configuración actual
+
+@app.route('/api/config/capital', methods=['GET'])
+def get_capital_config():
+    """Obtiene configuración de capital"""
+    try:
         return jsonify({
             'capital_mode': Config.CAPITAL_MODE,
             'max_capital_percent': Config.MAX_CAPITAL_PERCENT,
             'max_capital_fixed': Config.MAX_CAPITAL_FIXED,
             'distribution_mode': Config.DISTRIBUTION_MODE
         })
-    
-    else:  # POST
-        # Actualizar configuración
-        try:
-            data = request.get_json()
-            
-            # Validar y actualizar CAPITAL_MODE
-            if 'capital_mode' in data:
-                mode = data['capital_mode'].upper()
-                if mode in ['PERCENTAGE', 'FIXED']:
-                    Config.CAPITAL_MODE = mode
-                    logger.info(f"✅ Modo de capital actualizado: {mode}")
-                else:
-                    return jsonify({'error': 'Modo inválido. Usar PERCENTAGE o FIXED'}), 400
-            
-            # Actualizar MAX_CAPITAL_PERCENT
-            if 'max_capital_percent' in data:
-                percent = float(data['max_capital_percent'])
-                if 1 <= percent <= 100:
-                    Config.MAX_CAPITAL_PERCENT = percent
-                    logger.info(f"✅ Porcentaje máximo actualizado: {percent}%")
-                else:
-                    return jsonify({'error': 'Porcentaje debe estar entre 1 y 100'}), 400
-            
-            # Actualizar MAX_CAPITAL_FIXED
-            if 'max_capital_fixed' in data:
-                fixed = float(data['max_capital_fixed'])
-                if fixed > 0:
-                    Config.MAX_CAPITAL_FIXED = fixed
-                    logger.info(f"✅ Monto fijo actualizado: €{fixed:.2f}")
-                else:
-                    return jsonify({'error': 'Monto debe ser mayor a 0'}), 400
-            
-            # Actualizar DISTRIBUTION_MODE
-            if 'distribution_mode' in data:
-                dist_mode = data['distribution_mode'].upper()
-                if dist_mode in ['EQUAL', 'WEIGHTED']:
-                    Config.DISTRIBUTION_MODE = dist_mode
-                    logger.info(f"✅ Modo de distribución actualizado: {dist_mode}")
-                else:
-                    return jsonify({'error': 'Modo inválido. Usar EQUAL o WEIGHTED'}), 400
-            
-            return jsonify({
-                'success': True,
-                'message': 'Configuración actualizada correctamente',
-                'config': {
-                    'capital_mode': Config.CAPITAL_MODE,
-                    'max_capital_percent': Config.MAX_CAPITAL_PERCENT,
-                    'max_capital_fixed': Config.MAX_CAPITAL_FIXED,
-                    'distribution_mode': Config.DISTRIBUTION_MODE
-                }
-            })
-        
-        except Exception as e:
-            logger.error(f"Error actualizando configuración: {e}")
-            return jsonify({'error': str(e)}), 500
-
-@app.route('/api/status')
-def get_status():
-    """Endpoint para verificar estado del bot"""
-    now = datetime.now()
-    is_trading_hours = (
-        now.weekday() < 5 and
-        Config.START_HOUR <= now.hour < Config.END_HOUR
-    )
-    
-    # Obtener estado del controlador
-    bot_state = bot_controller.get_status()
-    
-    return jsonify({
-        'status': 'running' if bot_state['running'] else 'stopped',
-        'running': bot_state['running'],
-        'manual_override': bot_state.get('manual_override', False),
-        'is_trading_hours': is_trading_hours,
-        'current_time': now.isoformat(),
-        'next_scan': 'In progress' if (is_trading_hours and bot_state['running']) else 'Paused'
-    })
-@app.route('/api/config/capital', methods=['GET'])
-def get_capital_config():
-    """Obtiene configuración de capital"""
-    return jsonify({
-        'capital_mode': Config.CAPITAL_MODE,
-        'max_capital_percent': Config.MAX_CAPITAL_PERCENT,
-        'max_capital_fixed': Config.MAX_CAPITAL_FIXED,
-        'distribution_mode': Config.DISTRIBUTION_MODE
-    })
+    except Exception as e:
+        logger.error(f"Error en get_capital_config: {e}")
+        return jsonify({
+            'capital_mode': 'PERCENTAGE',
+            'max_capital_percent': 40.0,
+            'max_capital_fixed': 400.0,
+            'distribution_mode': 'EQUAL'
+        }), 200
 
 
 @app.route('/api/config/capital', methods=['POST'])
@@ -289,6 +279,28 @@ def update_capital_config():
     except Exception as e:
         logger.error(f"Error actualizando configuración: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/status')
+def get_status():
+    """Endpoint para verificar estado del bot"""
+    now = datetime.now()
+    is_trading_hours = (
+        now.weekday() < 5 and
+        Config.START_HOUR <= now.hour < Config.END_HOUR
+    )
+    
+    # Obtener estado del controlador
+    bot_state = bot_controller.get_status()
+    
+    return jsonify({
+        'status': 'running' if bot_state['running'] else 'stopped',
+        'running': bot_state['running'],
+        'manual_override': bot_state.get('manual_override', False),
+        'is_trading_hours': is_trading_hours,
+        'current_time': now.isoformat(),
+        'next_scan': 'In progress' if (is_trading_hours and bot_state['running']) else 'Paused'
+    })
 
 
 # ============================================
@@ -416,7 +428,7 @@ def export_backtest():
 def export_logs():
     """Exporta logs del bot"""
     try:
-        log_file = '../intraday_trading_bot.log'
+        log_file = 'intraday_trading_bot.log'
         
         if not os.path.exists(log_file):
             return jsonify({'error': 'No hay logs disponibles'}), 404
