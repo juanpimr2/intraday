@@ -16,9 +16,27 @@ class Config:
     BASE_URL = "https://demo-api-capital.backend-capital.com"
     
     # ============================================
-    # GESTIÓN DE CAPITAL
+    # GESTIÓN DE CAPITAL - NUEVA CONFIGURACIÓN
     # ============================================
-    TARGET_PERCENT_OF_AVAILABLE = 0.40  # % del margen DISPONIBLE para todas las operaciones
+
+    # Modo de capital máximo: 'PERCENTAGE' o 'FIXED'
+    CAPITAL_MODE = 'PERCENTAGE'  # Cambiar a 'FIXED' para usar monto fijo
+
+    # Si CAPITAL_MODE = 'PERCENTAGE':
+    MAX_CAPITAL_PERCENT = 40.0  # % del balance disponible para TODAS las operaciones juntas
+
+    # Si CAPITAL_MODE = 'FIXED':
+    MAX_CAPITAL_FIXED = 400.0   # Monto fijo en EUR para TODAS las operaciones juntas
+
+    # Distribución entre operaciones
+    # 'EQUAL' = dividir equitativamente
+    # 'WEIGHTED' = por confianza (más confianza = más capital)
+    DISTRIBUTION_MODE = 'EQUAL'
+
+    # Margen de seguridad al calcular tamaños (para evitar exceder límites)
+    SIZE_SAFETY_MARGIN = 0.85  # Usar solo 85% del tamaño calculado
+
+    # Límites antiguos (mantener para compatibilidad)
     MAX_CAPITAL_RISK = 0.70              # % del balance como margen total máximo (límite seguridad)
     MAX_MARGIN_PER_ASSET = 0.35          # % del balance máximo por mismo instrumento
     MAX_POSITIONS = 3                     # Número máximo de posiciones simultáneas

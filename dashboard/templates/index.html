@@ -65,6 +65,77 @@
             </div>
         </section>
 
+        <section class="card">
+            <div class="card-header-with-actions">
+                <h2>💰 Gestión de Capital</h2>
+                <button class="btn btn-primary" onclick="toggleCapitalEdit()">
+                    ⚙️ Editar
+                </button>
+            </div>
+            
+            <!-- Vista de solo lectura -->
+            <div id="capital-view" class="config-grid">
+                <div class="config-item">
+                    <div class="config-label">Modo</div>
+                    <div class="config-value" id="capital-mode-view">PERCENTAGE</div>
+                </div>
+                <div class="config-item" id="percent-view-item">
+                    <div class="config-label">% Máximo del Balance</div>
+                    <div class="config-value" id="capital-percent-view">40%</div>
+                </div>
+                <div class="config-item" id="fixed-view-item" style="display: none;">
+                    <div class="config-label">Monto Fijo</div>
+                    <div class="config-value" id="capital-fixed-view">€400.00</div>
+                </div>
+                <div class="config-item">
+                    <div class="config-label">Distribución</div>
+                    <div class="config-value" id="distribution-mode-view">EQUAL</div>
+                </div>
+            </div>
+            
+            <!-- Editor (oculto por defecto) -->
+            <div id="capital-edit" style="display: none;">
+                <div class="config-edit-form">
+                    <div class="form-group">
+                        <label>Modo de Capital:</label>
+                        <select id="capital-mode-select" onchange="toggleCapitalModeInputs()">
+                            <option value="PERCENTAGE">Porcentaje del Balance</option>
+                            <option value="FIXED">Monto Fijo (EUR)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group" id="percent-input-group">
+                        <label>% Máximo del Balance:</label>
+                        <input type="number" id="capital-percent-input" min="1" max="100" step="1" value="40">
+                        <small>Porcentaje del balance disponible para TODAS las operaciones</small>
+                    </div>
+                    
+                    <div class="form-group" id="fixed-input-group" style="display: none;">
+                        <label>Monto Fijo (EUR):</label>
+                        <input type="number" id="capital-fixed-input" min="10" step="10" value="400">
+                        <small>Monto fijo en EUR para TODAS las operaciones</small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Modo de Distribución:</label>
+                        <select id="distribution-mode-select">
+                            <option value="EQUAL">Equitativa (dividir por igual)</option>
+                            <option value="WEIGHTED">Ponderada (por confianza)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button class="btn btn-success" onclick="saveCapitalConfig()">
+                            ✅ Guardar
+                        </button>
+                        <button class="btn btn-secondary" onclick="cancelCapitalEdit()">
+                            ❌ Cancelar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Export Section -->
         <section class="card">
             <h2>📤 Exportar Datos</h2>

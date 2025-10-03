@@ -241,6 +241,145 @@ async function exportLogs() {
     }
 }
 
+
+
+
+// Actualizar vista de configuración de capital
+async function updateCapitalConfig() {
+    try {
+        const response = await fetch('/api/config/capital');
+        const data = await response.json();
+        
+        // Actualizar modo
+        document.getElementById('capital-mode-view').textContent = 
+            data.capital_mode === 'PERCENTAGE' ? 'Porcentaje' : 'Monto Fijo';
+        
+        // Mostrar/ocultar según modo
+        if (data.capital_mode === 'PERCENTAGE') {
+            document.getElementById('percent-view-item').style.display = 'block';
+            document.getElementById('fixed-view-item').style.display = 'none';
+            document.getElementById('capital-percent-view').textContent = 
+                `${data.max_capital_percent.toFixed(1)}%`;
+        } else {
+            document.getElementById('percent-view-item').style.display = 'none';
+            document.getElementById('fixed-view-item').style.display = 'block';
+            document.getElementById('capital-fixed-view').textContent = 
+                formatCurrency(data.max_capital_fixed);
+        }
+        
+        // Actualizar distribución
+        document.getElementById('distribution-mode-view').textContent = 
+            data.distribution_mode === 'EQUAL' ? 'Equitativa' : 'Ponderada';
+        
+    } catch (error) {
+        console.error('Error actualizando config de capital:', error);
+    }
+}
+
+// Mostrar editor de capital
+function toggleCapitalEdit() {
+    document.getElementById('capital-view').style.display = 'none';
+    document.getElementById('capital-edit').style.display = 'block';
+    
+    // Cargar valores actuales
+    loadCurrentCapitalConfig();
+}
+
+// Cargar configuración actual en el editor
+async function loadCurrentCapitalConfig() {
+    try {
+        const response = await fetch('/api/config/capital');
+        const data = await response.json();
+        
+        // Establecer valores
+        document.getElementById('capital-mode-select').value = data.capital_mode;
+        document.getElementById('capital-percent-input').value = data.max_capital_percent;
+        document.getElementById('capital-fixed-input').value = data.max_capital_fixed;
+        document.getElementById('distribution-mode-select').value = data.distribution_mode;
+        
+        // Mostrar/ocultar inputs según modo
+        toggleCapitalModeInputs();
+        
+    } catch (error) {
+        console.error('Error cargando config:', error);
+        showToast('Error cargando configuración', 'error');
+    }
+}
+
+
+// Toggle entre inputs de porcentaje y monto fijo
+function toggleCapitalModeInputs() {
+    const mode = document.getElementById('capital-mode-select').value;
+    
+    if (mode === 'PERCENTAGE') {
+        document.getElementById('percent-input-group').style.display = 'block';
+        document.getElementById('fixed-input-group').style.display = 'none';
+    } else {
+        document.getElementById('percent-input-group').style.display = 'none';
+        document.getElementById('fixed-input-group').style.display = 'block';
+    }
+}
+
+
+// Guardar configuración de capital
+async function saveCapitalConfig() {
+    try {
+        const mode = document.getElementById('capital-mode-select').value;
+        const percent = parseFloat(document.getElementById('capital-percent-input').value);
+        const fixed = parseFloat(document.getElementById('capital-fixed-input').value);
+        const distribution = document.getElementById('distribution-mode-select').value;
+        
+        // Validaciones
+        if (mode === 'PERCENTAGE' && (percent < 1 || percent > 100)) {
+            showToast('El porcentaje debe estar entre 1 y 100', 'error');
+            return;
+        }
+        
+        if (mode === 'FIXED' && fixed <= 0) {
+            showToast('El monto debe ser mayor a 0', 'error');
+            return;
+        }
+        
+        // Enviar actualización
+        showToast('Guardando configuración...', 'info');
+        
+        const response = await fetch('/api/config/capital', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                capital_mode: mode,
+                max_capital_percent: percent,
+                max_capital_fixed: fixed,
+                distribution_mode: distribution
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('✅ Configuración guardada correctamente', 'success');
+            
+            // Cerrar editor y actualizar vista
+            cancelCapitalEdit();
+            await updateCapitalConfig();
+        } else {
+            showToast('❌ Error: ' + data.error, 'error');
+        }
+        
+    } catch (error) {
+        console.error('Error guardando config:', error);
+        showToast('❌ Error de conexión', 'error');
+    }
+}
+
+// Cancelar edición
+function cancelCapitalEdit() {
+    document.getElementById('capital-view').style.display = 'grid';
+    document.getElementById('capital-edit').style.display = 'none';
+}
+
 // Función para actualizar todo
 async function updateAll() {
     updateTimestamp();
@@ -248,6 +387,7 @@ async function updateAll() {
         updateAccount(),
         updatePositions(),
         updateConfig(),
+        updateCapitalConfig(),  // ← AGREGAR ESTA LÍNEA
         updateStatus()
     ]);
 }

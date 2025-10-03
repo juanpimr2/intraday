@@ -77,8 +77,9 @@ class TradingBot:
                 logger.error(f"❌ Error en loop principal: {e}")
                 time.sleep(300)  # Esperar 5 min antes de reintentar
     
+
     def scan_and_trade(self):
-        """Escanea mercados y ejecuta operaciones"""
+        """Escanea mercados y ejecuta operaciones - NUEVA LÓGICA"""
         logger.info("="*60)
         logger.info("🔍 ESCANEANDO MERCADOS")
         logger.info("="*60)
@@ -93,50 +94,241 @@ class TradingBot:
             logger.warning("⚠️  Balance insuficiente")
             return
         
-        # Calcular límites
+        # ============================================
+        # PASO 1: ANALIZAR TODOS LOS MERCADOS
+        # ============================================
+        logger.info(f"📊 Analizando {len(Config.ASSETS)} activos...")
+        all_analyses = self._analyze_markets()
+        
+        if not all_analyses:
+            logger.info("ℹ️  No hay señales de trading en ningún activo")
+            return
+        
+        # Filtrar por confianza mínima
+        valid_analyses = [a for a in all_analyses if a['confidence'] >= Config.MIN_CONFIDENCE]
+        
+        if not valid_analyses:
+            logger.info(f"ℹ️  Ninguna señal supera la confianza mínima ({Config.MIN_CONFIDENCE:.0%})")
+            return
+        
+        # Limitar al número máximo de posiciones
+        valid_analyses.sort(key=lambda x: x['confidence'], reverse=True)
+        valid_analyses = valid_analyses[:Config.MAX_POSITIONS]
+        
+        num_opportunities = len(valid_analyses)
+        
+        logger.info("="*60)
+        logger.info(f"✅ OPORTUNIDADES DETECTADAS: {num_opportunities}")
+        logger.info("="*60)
+        for i, analysis in enumerate(valid_analyses, 1):
+            logger.info(
+                f"{i}. {analysis['epic']}: {analysis['signal']} "
+                f"(Confianza: {analysis['confidence']:.0%}, "
+                f"ATR: {analysis.get('atr_percent', 0):.2f}%)"
+            )
+        
+        # ============================================
+        # PASO 2: CALCULAR CAPITAL TOTAL DISPONIBLE
+        # ============================================
+        if Config.CAPITAL_MODE == 'PERCENTAGE':
+            total_capital = available * (Config.MAX_CAPITAL_PERCENT / 100)
+            logger.info(f"\n💰 Modo: PORCENTAJE")
+            logger.info(f"   Capital disponible: €{available:.2f}")
+            logger.info(f"   % máximo a usar: {Config.MAX_CAPITAL_PERCENT:.1f}%")
+            logger.info(f"   Capital total asignado: €{total_capital:.2f}")
+        else:  # FIXED
+            total_capital = min(Config.MAX_CAPITAL_FIXED, available)
+            logger.info(f"\n💰 Modo: MONTO FIJO")
+            logger.info(f"   Monto máximo configurado: €{Config.MAX_CAPITAL_FIXED:.2f}")
+            logger.info(f"   Capital disponible: €{available:.2f}")
+            logger.info(f"   Capital total asignado: €{total_capital:.2f}")
+        
+        # ============================================
+        # PASO 3: DISTRIBUIR CAPITAL ENTRE OPERACIONES
+        # ============================================
+        capital_distribution = self._distribute_capital(
+            valid_analyses, 
+            total_capital, 
+            num_opportunities
+        )
+        
+        logger.info(f"\n📊 DISTRIBUCIÓN DE CAPITAL:")
+        logger.info(f"   Modo: {Config.DISTRIBUTION_MODE}")
+        for epic, amount in capital_distribution.items():
+            logger.info(f"   {epic}: €{amount:.2f}")
+        
+        # ============================================
+        # PASO 4: PLANIFICAR OPERACIONES
+        # ============================================
         margin_used = self.position_manager.calculate_margin_used(self.account_info)
         total_limit = balance * Config.MAX_CAPITAL_RISK
         remaining_margin = max(total_limit - margin_used, 0.0)
         
-        self._log_margin_status(margin_used, total_limit, available, balance)
+        logger.info(f"\n🧮 ESTADO DE MARGEN:")
+        logger.info(f"   Margen usado: €{margin_used:.2f}")
+        logger.info(f"   Límite total: €{total_limit:.2f} ({Config.MAX_CAPITAL_RISK*100:.0f}% del balance)")
+        logger.info(f"   Margen disponible: €{remaining_margin:.2f}")
         
-        if remaining_margin <= 0:
-            logger.warning("⛔ Sin margen disponible para nuevas operaciones")
-            return
-        
-        # Analizar mercados
-        analyses = self._analyze_markets()
-        
-        if not analyses:
-            logger.info("ℹ️  No hay oportunidades de trading válidas")
-            return
-        
-        # Filtrar y ordenar por confianza
-        analyses = [a for a in analyses if a['confidence'] >= Config.MIN_CONFIDENCE]
-        analyses.sort(key=lambda x: x['confidence'], reverse=True)
-        analyses = analyses[:Config.MAX_POSITIONS]
-        
-        # Calcular margen por operación
-        total_target_margin = min(available * Config.TARGET_PERCENT_OF_AVAILABLE, remaining_margin)
-        num_trades = len(analyses)
-        per_trade_margin = total_target_margin / max(num_trades, 1)
-        
-        logger.info(f"💰 Margen TOTAL objetivo: €{total_target_margin:.2f} ({Config.TARGET_PERCENT_OF_AVAILABLE*100:.0f}% del disponible)")
-        logger.info(f"🎯 Margen por operación: €{per_trade_margin:.2f} (dividido entre {num_trades} operaciones)")
-        
-        # Planificar operaciones
-        plans = self._plan_trades(analyses, per_trade_margin, balance)
+        plans = self._plan_trades_distributed(
+            valid_analyses, 
+            capital_distribution, 
+            balance,
+            remaining_margin
+        )
         
         if not plans:
-            logger.info("ℹ️  No hay operaciones viables tras aplicar límites")
+            logger.info("\nℹ️  No hay operaciones viables tras aplicar límites")
             return
         
-        # Ejecutar operaciones
+        # ============================================
+        # PASO 5: EJECUTAR OPERACIONES
+        # ============================================
         self._execute_trades(plans, margin_used, total_limit)
-    
+
+    def _plan_trades_distributed(
+        self, 
+        analyses: List[Dict], 
+        capital_distribution: Dict[str, float],
+        balance: float,
+        remaining_margin: float
+    ) -> List[Dict]:
+        """
+        Planifica operaciones con capital YA distribuido
+        
+        Args:
+            analyses: Lista de análisis
+            capital_distribution: Capital asignado a cada epic
+            balance: Balance total
+            remaining_margin: Margen disponible
+        
+        Returns:
+            Lista de planes de trading
+        """
+        plans = []
+        margin_by_asset = self.position_manager.get_margin_by_asset()
+        asset_limit = balance * Config.MAX_MARGIN_PER_ASSET
+        
+        logger.info("\n" + "="*60)
+        logger.info("📋 PLANIFICANDO OPERACIONES")
+        logger.info("="*60)
+        
+        for analysis in analyses:
+            epic = analysis['epic']
+            price = safe_float(analysis['current_price'])
+            direction = analysis['signal']
+            atr_pct = analysis.get('atr_percent', 0)
+            assigned_capital = capital_distribution.get(epic, 0)
+            
+            logger.info(f"\n🔍 {epic}:")
+            logger.info(f"   Precio: €{price:.2f}")
+            logger.info(f"   Dirección: {direction}")
+            logger.info(f"   Capital asignado: €{assigned_capital:.2f}")
+            
+            # Calcular tamaño de posición con margen de seguridad
+            target_margin = assigned_capital * Config.SIZE_SAFETY_MARGIN
+            
+            size, details, margin_est = self.position_manager.calculate_position_size(
+                epic, price, target_margin
+            )
+            
+            logger.info(f"   Size calculado: {size}")
+            logger.info(f"   Margen estimado: €{margin_est:.2f}")
+            
+            # Verificar límite por activo
+            asset_used = margin_by_asset.get(epic, 0.0)
+            total_for_asset = asset_used + margin_est
+            
+            logger.info(f"   Margen ya usado: €{asset_used:.2f}")
+            logger.info(f"   Total si ejecuta: €{total_for_asset:.2f}")
+            logger.info(f"   Límite por activo: €{asset_limit:.2f}")
+            
+            if total_for_asset > asset_limit:
+                logger.warning(f"   ⛔ RECHAZADA: Excede límite por activo")
+                continue
+            
+            # Verificar que no exceda el capital asignado en más de 20%
+            if margin_est > assigned_capital * 1.2:
+                logger.warning(
+                    f"   ⛔ RECHAZADA: Margen estimado (€{margin_est:.2f}) "
+                    f"excede capital asignado (€{assigned_capital:.2f}) en más del 20%"
+                )
+                continue
+            
+            # Calcular SL y TP
+            if Config.SL_TP_MODE == 'DYNAMIC' and atr_pct > 0:
+                stop_loss = self.position_manager.calculate_stop_loss(price, direction, atr_pct)
+                take_profit = self.position_manager.calculate_take_profit(price, direction, atr_pct)
+            else:
+                stop_loss = self.position_manager.calculate_stop_loss(price, direction)
+                take_profit = self.position_manager.calculate_take_profit(price, direction)
+            
+            rr_ratio = self.position_manager.get_risk_reward_ratio(price, stop_loss, take_profit, direction)
+            
+            logger.info(f"   SL: €{stop_loss:.2f}")
+            logger.info(f"   TP: €{take_profit:.2f}")
+            logger.info(f"   R/R: {rr_ratio:.2f}")
+            logger.info(f"   ✅ ACEPTADA")
+            
+            plans.append({
+                'epic': epic,
+                'direction': direction,
+                'price': price,
+                'size': size,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'margin_est': margin_est,
+                'confidence': analysis['confidence'],
+                'reasons': analysis['reasons'],
+                'indicators': analysis['indicators'],
+                'atr_percent': atr_pct,
+                'rr_ratio': rr_ratio,
+                'assigned_capital': assigned_capital
+            })
+        
+        logger.info("\n" + "="*60)
+        logger.info(f"📊 RESULTADO: {len(plans)} operación(es) planificada(s)")
+        logger.info("="*60)
+        
+        return plans
+
+    def _distribute_capital(self, analyses: List[Dict], total_capital: float, num_ops: int) -> Dict[str, float]:
+        """
+        Distribuye el capital total entre las operaciones
+        
+        Args:
+            analyses: Lista de análisis con señales
+            total_capital: Capital total a distribuir
+            num_ops: Número de operaciones
+        
+        Returns:
+            Dict {epic: capital_asignado}
+        """
+        distribution = {}
+        
+        if Config.DISTRIBUTION_MODE == 'EQUAL':
+            # Distribución equitativa
+            per_operation = total_capital / num_ops
+            
+            for analysis in analyses:
+                distribution[analysis['epic']] = per_operation
+        
+        else:  # WEIGHTED por confianza
+            # Distribución ponderada por confianza
+            total_confidence = sum(a['confidence'] for a in analyses)
+            
+            for analysis in analyses:
+                weight = analysis['confidence'] / total_confidence
+                distribution[analysis['epic']] = total_capital * weight
+        
+        return distribution
+
+
     def _analyze_markets(self) -> List[Dict]:
-        """Analiza todos los mercados del universo"""
+        """Analiza TODOS los mercados - CORREGIDO para analizar todo el array"""
         analyses = []
+        
+        logger.info(f"\n{'Asset':<10} {'Status':<15} {'Signal':<10} {'Conf':<10} {'Reason'}")
+        logger.info("-" * 70)
         
         for epic in Config.ASSETS:
             try:
@@ -144,7 +336,7 @@ class TradingBot:
                 market_data = self.api.get_market_data(epic, Config.TIMEFRAME)
                 
                 if not market_data or 'prices' not in market_data or not market_data['prices']:
-                    logger.warning(f"⚠️  No hay datos para {epic}")
+                    logger.info(f"{epic:<10} ❌ Sin datos")
                     continue
                 
                 # Convertir a DataFrame
@@ -159,27 +351,35 @@ class TradingBot:
                 df = df.dropna(subset=['closePrice'])
                 
                 if df.empty:
+                    logger.info(f"{epic:<10} ❌ Datos vacíos")
                     continue
                 
                 # Analizar con la estrategia
                 analysis = self.strategy.analyze(df, epic)
                 
-                if analysis['signal'] in ['BUY', 'SELL'] and analysis['current_price'] > 0:
-                    analyses.append(analysis)
+                # Log del resultado
+                if analysis['signal'] == 'NEUTRAL':
+                    reason = analysis['reasons'][0] if analysis['reasons'] else 'Sin señal'
+                    logger.info(f"{epic:<10} ⚪ Neutral     {'':<10} {'':<10} {reason}")
+                else:
                     logger.info(
-                        f"📊 {epic}: {analysis['signal']} "
-                        f"(conf {analysis['confidence']:.0%}) "
-                        f"RSI {analysis['indicators']['rsi']:.1f}"
+                        f"{epic:<10} ✅ Señal       {analysis['signal']:<10} "
+                        f"{analysis['confidence']:.0%}      "
+                        f"RSI:{analysis['indicators'].get('rsi', 0):.1f}"
                     )
+                    analyses.append(analysis)
                 
                 time.sleep(0.2)  # Rate limiting
                 
             except Exception as e:
-                logger.error(f"Error analizando {epic}: {e}")
+                logger.error(f"{epic:<10} ❌ Error: {str(e)[:30]}")
                 continue
         
+        logger.info("-" * 70)
+        logger.info(f"Total señales válidas: {len(analyses)}/{len(Config.ASSETS)}\n")
+        
         return analyses
-    
+
     def _plan_trades(self, analyses: List[Dict], per_trade_margin: float, balance: float) -> List[Dict]:
         """Planifica las operaciones a ejecutar"""
         plans = []
