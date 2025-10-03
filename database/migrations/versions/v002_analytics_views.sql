@@ -14,7 +14,7 @@ SELECT
     s.initial_balance,
     s.final_balance,
     s.final_balance - s.initial_balance AS total_profit,
-    ROUND(((s.final_balance - s.initial_balance) / s.initial_balance * 100)::numeric, 2) AS roi_percent,
+    ROUND(((s.final_balance - s.initial_balance) / NULLIF(s.initial_balance, 0) * 100)::numeric, 2) AS roi_percent,
     s.total_trades,
     s.winning_trades,
     s.losing_trades,
@@ -46,13 +46,13 @@ SELECT
     t.position_size,
     t.stop_loss,
     t.take_profit,
-    ROUND(ABS(t.entry_price - t.stop_loss) / t.entry_price * 100, 2) AS sl_distance_percent,
-    ROUND(ABS(t.take_profit - t.entry_price) / t.entry_price * 100, 2) AS tp_distance_percent,
+    ROUND(ABS(t.entry_price - t.stop_loss) / NULLIF(t.entry_price, 0) * 100, 2) AS sl_distance_percent,
+    ROUND(ABS(t.take_profit - t.entry_price) / NULLIF(t.entry_price, 0) * 100, 2) AS tp_distance_percent,
     CASE 
         WHEN t.direction = 'BUY' THEN 
-            ROUND((ABS(t.take_profit - t.entry_price) / ABS(t.entry_price - t.stop_loss))::numeric, 2)
+            ROUND((ABS(t.take_profit - t.entry_price) / NULLIF(ABS(t.entry_price - t.stop_loss), 0))::numeric, 2)
         ELSE 
-            ROUND((ABS(t.entry_price - t.take_profit) / ABS(t.stop_loss - t.entry_price))::numeric, 2)
+            ROUND((ABS(t.entry_price - t.take_profit) / NULLIF(ABS(t.stop_loss - t.entry_price), 0))::numeric, 2)
     END AS risk_reward_ratio,
     t.pnl,
     t.pnl_percent,
@@ -79,7 +79,7 @@ SELECT
     COUNT(*) AS total_trades,
     SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) AS wins,
     SUM(CASE WHEN t.pnl < 0 THEN 1 ELSE 0 END) AS losses,
-    ROUND((SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)::decimal / COUNT(*) * 100)::numeric, 2) AS win_rate,
+    ROUND((SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(*), 0) * 100)::numeric, 2) AS win_rate,
     SUM(t.pnl) AS total_pnl,
     AVG(t.pnl) AS avg_pnl,
     MAX(t.pnl) AS best_trade,
@@ -137,7 +137,7 @@ SELECT
     COUNT(*) AS trades,
     SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) AS wins,
     SUM(CASE WHEN t.pnl < 0 THEN 1 ELSE 0 END) AS losses,
-    ROUND((SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)::decimal / COUNT(*) * 100)::numeric, 2) AS win_rate,
+    ROUND((SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(*), 0) * 100)::numeric, 2) AS win_rate,
     SUM(t.pnl) AS daily_pnl,
     AVG(t.pnl) AS avg_pnl_per_trade,
     MAX(t.pnl) AS best_trade,
@@ -156,7 +156,7 @@ SELECT
     ms.signal,
     COUNT(*) AS total_signals,
     SUM(CASE WHEN ms.executed THEN 1 ELSE 0 END) AS executed_signals,
-    ROUND((SUM(CASE WHEN ms.executed THEN 1 ELSE 0 END)::decimal / COUNT(*) * 100)::numeric, 2) 
+    ROUND((SUM(CASE WHEN ms.executed THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(*), 0) * 100)::numeric, 2) 
         AS execution_rate,
     ROUND(AVG(ms.confidence)::numeric, 4) AS avg_confidence,
     ROUND(AVG(ms.rsi)::numeric, 2) AS avg_rsi,
@@ -179,7 +179,7 @@ CREATE OR REPLACE VIEW v_exit_reason_analysis AS
 SELECT 
     t.exit_reason,
     COUNT(*) AS total_exits,
-    ROUND((COUNT(*)::decimal / (SELECT COUNT(*) FROM trades WHERE status = 'CLOSED') * 100)::numeric, 2) 
+    ROUND((COUNT(*)::decimal / NULLIF((SELECT COUNT(*) FROM trades WHERE status = 'CLOSED'), 0) * 100)::numeric, 2) 
         AS percentage,
     SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) AS profitable,
     SUM(CASE WHEN t.pnl < 0 THEN 1 ELSE 0 END) AS unprofitable,
@@ -206,24 +206,28 @@ SELECT
     END AS atr_range,
     COUNT(*) AS trades,
     SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) AS wins,
-    ROUND((SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)::decimal / COUNT(*) * 100)::numeric, 2) AS win_rate,
+    ROUND((SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(*), 0) * 100)::numeric, 2) AS win_rate,
     SUM(t.pnl) AS total_pnl,
     AVG(t.pnl) AS avg_pnl,
-    AVG(t.duration_minutes) AS avg_duration
+    AVG(t.duration_minutes) AS avg_duration,
+    MIN(t.atr_at_entry) AS min_atr
 FROM trades t
 WHERE t.status = 'CLOSED' AND t.atr_at_entry IS NOT NULL
-GROUP BY atr_range
-ORDER BY 
+GROUP BY 
     CASE 
-        WHEN t.atr_at_entry < 0.5 THEN 1
-        WHEN t.atr_at_entry >= 0.5 AND t.atr_at_entry < 1.0 THEN 2
-        WHEN t.atr_at_entry >= 1.0 AND t.atr_at_entry < 2.0 THEN 3
-        WHEN t.atr_at_entry >= 2.0 AND t.atr_at_entry < 3.0 THEN 4
-        WHEN t.atr_at_entry >= 3.0 THEN 5
-        ELSE 6
-    END;
+        WHEN t.atr_at_entry < 0.5 THEN '< 0.5%'
+        WHEN t.atr_at_entry >= 0.5 AND t.atr_at_entry < 1.0 THEN '0.5-1.0%'
+        WHEN t.atr_at_entry >= 1.0 AND t.atr_at_entry < 2.0 THEN '1.0-2.0%'
+        WHEN t.atr_at_entry >= 2.0 AND t.atr_at_entry < 3.0 THEN '2.0-3.0%'
+        WHEN t.atr_at_entry >= 3.0 THEN '> 3.0%'
+        ELSE 'Unknown'
+    END
+ORDER BY min_atr;
 
 COMMENT ON VIEW v_session_summary IS 'Resumen ejecutivo de sesiones';
 COMMENT ON VIEW v_trade_analysis IS 'Análisis detallado de trades';
 COMMENT ON VIEW v_epic_performance IS 'Performance por activo';
 COMMENT ON VIEW v_strategy_comparison IS 'Comparación entre versiones';
+COMMENT ON VIEW v_signal_effectiveness IS 'Efectividad de señales';
+COMMENT ON VIEW v_exit_reason_analysis IS 'Análisis por razón de salida';
+COMMENT ON VIEW v_atr_effectiveness IS 'Performance por rangos de volatilidad';
