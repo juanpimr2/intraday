@@ -270,7 +270,7 @@ def export_backtest():
 def export_logs():
     """Exporta logs del bot"""
     try:
-        log_file = 'intraday_trading_bot.log'
+        log_file = '../intraday_trading_bot.log'
         
         if not os.path.exists(log_file):
             return jsonify({'error': 'No hay logs disponibles'}), 404
