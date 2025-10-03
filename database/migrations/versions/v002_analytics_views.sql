@@ -214,12 +214,12 @@ FROM trades t
 WHERE t.status = 'CLOSED' AND t.atr_at_entry IS NOT NULL
 GROUP BY atr_range
 ORDER BY 
-    CASE atr_range
-        WHEN '< 0.5%' THEN 1
-        WHEN '0.5-1.0%' THEN 2
-        WHEN '1.0-2.0%' THEN 3
-        WHEN '2.0-3.0%' THEN 4
-        WHEN '> 3.0%' THEN 5
+    CASE 
+        WHEN t.atr_at_entry < 0.5 THEN 1
+        WHEN t.atr_at_entry >= 0.5 AND t.atr_at_entry < 1.0 THEN 2
+        WHEN t.atr_at_entry >= 1.0 AND t.atr_at_entry < 2.0 THEN 3
+        WHEN t.atr_at_entry >= 2.0 AND t.atr_at_entry < 3.0 THEN 4
+        WHEN t.atr_at_entry >= 3.0 THEN 5
         ELSE 6
     END;
 

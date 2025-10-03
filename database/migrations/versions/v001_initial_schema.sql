@@ -1,5 +1,5 @@
--- v001_initial_schema.sql
--- Schema inicial del bot de trading
+-- v001_initial_schema.sql (FIXED VERSION)
+-- Schema inicial con IF NOT EXISTS para idempotencia
 
 CREATE TABLE IF NOT EXISTS strategy_versions (
     version_id SERIAL PRIMARY KEY,
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS strategy_versions (
     demo_days_tested INTEGER
 );
 
-CREATE INDEX idx_strategy_versions_active ON strategy_versions(is_active, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_versions_active ON strategy_versions(is_active, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS trading_sessions (
     session_id SERIAL PRIMARY KEY,
@@ -36,8 +36,8 @@ CREATE TABLE IF NOT EXISTS trading_sessions (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_sessions_start_time ON trading_sessions(start_time DESC);
-CREATE INDEX idx_sessions_strategy ON trading_sessions(strategy_version_id, start_time DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON trading_sessions(start_time DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_strategy ON trading_sessions(strategy_version_id, start_time DESC);
 
 CREATE TABLE IF NOT EXISTS account_snapshots (
     snapshot_id SERIAL PRIMARY KEY,
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS account_snapshots (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_snapshots_session ON account_snapshots(session_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_session ON account_snapshots(session_id, timestamp DESC);
 
 CREATE TABLE IF NOT EXISTS market_signals (
     signal_id SERIAL PRIMARY KEY,
@@ -81,9 +81,9 @@ CREATE TABLE IF NOT EXISTS market_signals (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_signals_session_epic ON market_signals(session_id, epic, timestamp DESC);
-CREATE INDEX idx_signals_executed ON market_signals(executed, timestamp DESC);
-CREATE INDEX idx_signals_confidence ON market_signals(confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_session_epic ON market_signals(session_id, epic, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_executed ON market_signals(executed, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_confidence ON market_signals(confidence DESC);
 
 CREATE TABLE IF NOT EXISTS trades (
     trade_id SERIAL PRIMARY KEY,
@@ -114,11 +114,11 @@ CREATE TABLE IF NOT EXISTS trades (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_trades_session ON trades(session_id, entry_time DESC);
-CREATE INDEX idx_trades_epic ON trades(epic, entry_time DESC);
-CREATE INDEX idx_trades_status ON trades(status);
-CREATE INDEX idx_trades_pnl ON trades(pnl DESC NULLS LAST);
-CREATE INDEX idx_trades_exit_reason ON trades(exit_reason);
+CREATE INDEX IF NOT EXISTS idx_trades_session ON trades(session_id, entry_time DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_epic ON trades(epic, entry_time DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
+CREATE INDEX IF NOT EXISTS idx_trades_pnl ON trades(pnl DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_trades_exit_reason ON trades(exit_reason);
 
 CREATE TABLE IF NOT EXISTS performance_metrics (
     metric_id SERIAL PRIMARY KEY,
@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS performance_metrics (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_metrics_session_period ON performance_metrics(session_id, period_type, period_start DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_session_period ON performance_metrics(session_id, period_type, period_start DESC);
 
 CREATE TABLE IF NOT EXISTS backtest_results (
     backtest_id SERIAL PRIMARY KEY,
@@ -170,8 +170,8 @@ CREATE TABLE IF NOT EXISTS backtest_results (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_backtest_version ON backtest_results(strategy_version_id, created_at DESC);
-CREATE INDEX idx_backtest_date ON backtest_results(start_date DESC, end_date DESC);
+CREATE INDEX IF NOT EXISTS idx_backtest_version ON backtest_results(strategy_version_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_backtest_date ON backtest_results(start_date DESC, end_date DESC);
 
 CREATE TABLE IF NOT EXISTS system_logs (
     log_id SERIAL PRIMARY KEY,
@@ -185,8 +185,8 @@ CREATE TABLE IF NOT EXISTS system_logs (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_logs_session_level ON system_logs(session_id, level, timestamp DESC);
-CREATE INDEX idx_logs_timestamp ON system_logs(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_session_level ON system_logs(session_id, level, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON system_logs(timestamp DESC);
 
 COMMENT ON TABLE strategy_versions IS 'Versiones de la estrategia para comparar mejoras';
 COMMENT ON TABLE trading_sessions IS 'Sesiones de trading del bot';
