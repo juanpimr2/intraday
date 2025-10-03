@@ -1,16 +1,9 @@
 # ============================================
-# API y Trading
+# Core Trading
 # ============================================
 requests==2.31.0
 pandas==2.0.3
 numpy==1.24.3
-
-# ============================================
-# Base de Datos PostgreSQL
-# ============================================
-psycopg2-binary==2.9.9
-python-dotenv==1.0.0
-sqlalchemy==2.0.23  # Opcional, para ORM avanzado
 
 # ============================================
 # Dashboard Web
@@ -19,21 +12,26 @@ flask==3.0.0
 flask-cors==4.0.0
 
 # ============================================
-# Exports y Reportes
+# Base de Datos PostgreSQL
 # ============================================
-openpyxl==3.1.2  # Para Excel
-xlsxwriter==3.1.9  # Alternativa para Excel
-# reportlab==4.0.7  # Para PDFs (opcional)
+psycopg2-binary==2.9.9
+python-dotenv==1.0.0
 
 # ============================================
-# Análisis y Visualización
+# Exports y Reportes
 # ============================================
-matplotlib==3.8.2  # Para gráficos
-seaborn==0.13.0  # Para visualizaciones estadísticas
-plotly==5.18.0  # Para gráficos interactivos en dashboard
+openpyxl==3.1.2       # Para exportar a Excel
+xlsxwriter==3.1.9     # Alternativa para Excel (opcional)
 
 # ============================================
 # Utilidades
 # ============================================
 python-dateutil==2.8.2
 pytz==2023.3
+
+# ============================================
+# Opcional - Para análisis avanzado
+# ============================================
+# matplotlib==3.8.2   # Para gráficos (descomentar si lo necesitas)
+# seaborn==0.13.0     # Para visualizaciones (descomentar si lo necesitas)
+# plotly==5.18.0      # Para gráficos interactivos (descomentar si lo necesitas)
