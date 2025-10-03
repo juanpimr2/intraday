@@ -129,15 +129,74 @@ def get_config():
         'size_safety_margin': Config.SIZE_SAFETY_MARGIN * 100
     })
 
-@app.route('/api/config/capital', methods=['GET'])
-def get_capital_config():
-    """Obtiene configuración de capital"""
-    return jsonify({
-        'capital_mode': Config.CAPITAL_MODE,
-        'max_capital_percent': Config.MAX_CAPITAL_PERCENT,
-        'max_capital_fixed': Config.MAX_CAPITAL_FIXED,
-        'distribution_mode': Config.DISTRIBUTION_MODE
-    })
+@app.route('/api/config/capital', methods=['GET', 'POST'])
+def capital_config():
+    """Gestiona configuración de capital (GET y POST)"""
+    
+    if request.method == 'GET':
+        # Obtener configuración actual
+        return jsonify({
+            'capital_mode': Config.CAPITAL_MODE,
+            'max_capital_percent': Config.MAX_CAPITAL_PERCENT,
+            'max_capital_fixed': Config.MAX_CAPITAL_FIXED,
+            'distribution_mode': Config.DISTRIBUTION_MODE
+        })
+    
+    else:  # POST
+        # Actualizar configuración
+        try:
+            data = request.get_json()
+            
+            # Validar y actualizar CAPITAL_MODE
+            if 'capital_mode' in data:
+                mode = data['capital_mode'].upper()
+                if mode in ['PERCENTAGE', 'FIXED']:
+                    Config.CAPITAL_MODE = mode
+                    logger.info(f"✅ Modo de capital actualizado: {mode}")
+                else:
+                    return jsonify({'error': 'Modo inválido. Usar PERCENTAGE o FIXED'}), 400
+            
+            # Actualizar MAX_CAPITAL_PERCENT
+            if 'max_capital_percent' in data:
+                percent = float(data['max_capital_percent'])
+                if 1 <= percent <= 100:
+                    Config.MAX_CAPITAL_PERCENT = percent
+                    logger.info(f"✅ Porcentaje máximo actualizado: {percent}%")
+                else:
+                    return jsonify({'error': 'Porcentaje debe estar entre 1 y 100'}), 400
+            
+            # Actualizar MAX_CAPITAL_FIXED
+            if 'max_capital_fixed' in data:
+                fixed = float(data['max_capital_fixed'])
+                if fixed > 0:
+                    Config.MAX_CAPITAL_FIXED = fixed
+                    logger.info(f"✅ Monto fijo actualizado: €{fixed:.2f}")
+                else:
+                    return jsonify({'error': 'Monto debe ser mayor a 0'}), 400
+            
+            # Actualizar DISTRIBUTION_MODE
+            if 'distribution_mode' in data:
+                dist_mode = data['distribution_mode'].upper()
+                if dist_mode in ['EQUAL', 'WEIGHTED']:
+                    Config.DISTRIBUTION_MODE = dist_mode
+                    logger.info(f"✅ Modo de distribución actualizado: {dist_mode}")
+                else:
+                    return jsonify({'error': 'Modo inválido. Usar EQUAL o WEIGHTED'}), 400
+            
+            return jsonify({
+                'success': True,
+                'message': 'Configuración actualizada correctamente',
+                'config': {
+                    'capital_mode': Config.CAPITAL_MODE,
+                    'max_capital_percent': Config.MAX_CAPITAL_PERCENT,
+                    'max_capital_fixed': Config.MAX_CAPITAL_FIXED,
+                    'distribution_mode': Config.DISTRIBUTION_MODE
+                }
+            })
+        
+        except Exception as e:
+            logger.error(f"Error actualizando configuración: {e}")
+            return jsonify({'error': str(e)}), 500
 
 @app.route('/api/status')
 def get_status():
@@ -172,7 +231,7 @@ def get_capital_config():
 
 @app.route('/api/config/capital', methods=['POST'])
 def update_capital_config():
-    """Actualiza configuración de capital"""
+    """Actualiza configuración de capital""" 
     try:
         data = request.get_json()
         
