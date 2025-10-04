@@ -195,16 +195,28 @@ class TradingBot:
         """Analiza TODOS los mercados y guarda señales en BD"""
         analyses = []
         
-        logger.info(f"\n{'Asset':<10} {'Status':<15} {'Signal':<10} {'Conf':<10} {'Reason'}")
-        logger.info("-" * 70)
+        # ============================================
+        # HEADER CON FORMATO CLARO
+        # ============================================
+        logger.info("\n" + "="*80)
+        logger.info("📊 ANÁLISIS DE MERCADOS")
+        logger.info("="*80)
+        logger.info(f"Activos a analizar: {', '.join(Config.ASSETS)}")
+        logger.info(f"Timeframe: {Config.TIMEFRAME}")
+        logger.info(f"Confianza mínima: {Config.MIN_CONFIDENCE:.0%}")
+        logger.info("-"*80)
         
-        for epic in Config.ASSETS:
+        # Tabla de resultados
+        logger.info(f"{'#':<3} {'Asset':<10} {'Status':<15} {'Signal':<10} {'Conf':<8} {'ATR':<8} {'Reason'}")
+        logger.info("-"*80)
+        
+        for i, epic in enumerate(Config.ASSETS, 1):
             try:
                 # Obtener datos de mercado
                 market_data = self.api.get_market_data(epic, Config.TIMEFRAME)
                 
                 if not market_data or 'prices' not in market_data or not market_data['prices']:
-                    logger.info(f"{epic:<10} ❌ Sin datos")
+                    logger.info(f"{i:<3} {epic:<10} {'❌ Sin datos':<15}")
                     continue
                 
                 # Convertir a DataFrame
@@ -219,7 +231,7 @@ class TradingBot:
                 df = df.dropna(subset=['closePrice'])
                 
                 if df.empty:
-                    logger.info(f"{epic:<10} ❌ Datos vacíos")
+                    logger.info(f"{i:<3} {epic:<10} {'❌ Datos vacíos':<15}")
                     continue
                 
                 # Analizar con la estrategia
@@ -229,34 +241,66 @@ class TradingBot:
                 try:
                     signal_id = self.db_manager.save_signal(analysis)
                     if signal_id and analysis['signal'] in ['BUY', 'SELL']:
-                        # Guardar para vincular con trade después
                         self.signal_ids[epic] = signal_id
                 except Exception as e:
                     logger.debug(f"Error guardando señal de {epic}: {e}")
                 
-                # Log del resultado
+                # ============================================
+                # LOG FORMATEADO DEL RESULTADO
+                # ============================================
+                atr_str = f"{analysis.get('atr_percent', 0):.2f}%" if analysis.get('atr_percent') else "N/A"
+                
                 if analysis['signal'] == 'NEUTRAL':
                     reason = analysis['reasons'][0] if analysis['reasons'] else 'Sin señal'
-                    logger.info(f"{epic:<10} ⚪ Neutral     {'':<10} {'':<10} {reason}")
-                else:
+                    # Truncar razón si es muy larga
+                    reason = reason[:40] + "..." if len(reason) > 40 else reason
                     logger.info(
-                        f"{epic:<10} ✅ Señal       {analysis['signal']:<10} "
-                        f"{analysis['confidence']:.0%}      "
-                        f"RSI:{analysis['indicators'].get('rsi', 0):.1f}"
+                        f"{i:<3} {epic:<10} {'⚪ Neutral':<15} {'':<10} {'':<8} "
+                        f"{atr_str:<8} {reason}"
                     )
+                else:
+                    # Señal válida (BUY o SELL)
+                    conf_str = f"{analysis['confidence']:.0%}"
+                    rsi = analysis['indicators'].get('rsi', 0)
+                    reason_preview = analysis['reasons'][0][:30] if analysis['reasons'] else ''
+                    
+                    signal_emoji = "🟢" if analysis['signal'] == 'BUY' else "🔴"
+                    logger.info(
+                        f"{i:<3} {epic:<10} {signal_emoji + ' Señal':<15} "
+                        f"{analysis['signal']:<10} {conf_str:<8} {atr_str:<8} "
+                        f"RSI:{rsi:.0f}"
+                    )
+                    
+                    # Log detallado de razones (indentado)
+                    for reason in analysis['reasons'][:3]:  # Máximo 3 razones
+                        logger.info(f"    └─ {reason}")
+                    
                     analyses.append(analysis)
                 
                 time.sleep(0.2)
                 
             except Exception as e:
-                logger.error(f"{epic:<10} ❌ Error: {str(e)[:30]}")
+                logger.error(f"{i:<3} {epic:<10} {'❌ Error':<15} {str(e)[:40]}")
                 continue
         
-        logger.info("-" * 70)
-        logger.info(f"Total señales válidas: {len(analyses)}/{len(Config.ASSETS)}\n")
+        # ============================================
+        # FOOTER CON RESUMEN
+        # ============================================
+        logger.info("-"*80)
+        logger.info(f"✅ Análisis completado")
+        logger.info(f"   Total activos: {len(Config.ASSETS)}")
+        logger.info(f"   Señales detectadas: {len(analyses)}")
+        
+        if analyses:
+            buy_signals = len([a for a in analyses if a['signal'] == 'BUY'])
+            sell_signals = len([a for a in analyses if a['signal'] == 'SELL'])
+            logger.info(f"   🟢 BUY: {buy_signals}  🔴 SELL: {sell_signals}")
+            logger.info(f"   Confianza promedio: {sum(a['confidence'] for a in analyses) / len(analyses):.0%}")
+        
+        logger.info("="*80 + "\n")
         
         return analyses
-    
+
     def _distribute_capital(self, analyses: List[Dict], total_capital: float, num_ops: int) -> Dict[str, float]:
         """Distribuye el capital total entre las operaciones"""
         distribution = {}
