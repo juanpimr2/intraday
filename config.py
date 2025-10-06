@@ -122,6 +122,18 @@ class Config:
     MIN_SIGNALS_TO_TRADE = 2    # Mínimo de señales para operar
     MIN_CONFIDENCE = 0.50       # Confianza mínima para ejecutar (50%)
 
+    # Circuit Breaker - Protección contra pérdidas excesivas
+    ENABLE_CIRCUIT_BREAKER = True
+
+    # Límites de pérdida
+    MAX_DAILY_LOSS_PERCENT = 3.0      # -3% del capital en un día
+    MAX_WEEKLY_LOSS_PERCENT = 8.0     # -8% del capital en la semana
+    MAX_CONSECUTIVE_LOSSES = 5         # 5 trades perdedores seguidos
+    MAX_TOTAL_DRAWDOWN_PERCENT = 15.0 # -15% desde máximo histórico
+
+    # Acciones al activarse
+    CIRCUIT_BREAKER_ACTION = 'PAUSE'   # 'PAUSE' o 'STOP'
+
 
 class TradingMode:
     """Modos de trading disponibles"""

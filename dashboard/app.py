@@ -110,14 +110,14 @@ def get_positions():
         
         formatted_positions.append({
             'epic': pos.get('market', {}).get('epic', 'Unknown'),
-            'instrument_name': pos.get('market', {}).get('instrumentName', 'Unknown'),  # ← NUEVO
+            'instrument_name': pos.get('market', {}).get('instrumentName', 'Unknown'),
             'direction': position_data.get('direction', 'Unknown'),
             'size': safe_float(position_data.get('size', 0)),
             'level': safe_float(position_data.get('level', 0)),
             'currency': position_data.get('currency', 'EUR'),
             'createdDate': position_data.get('createdDate', ''),
             'stopLevel': safe_float(position_data.get('stopLevel', 0)),
-            'limitLevel': safe_float(position_data.get('limitLevel', 0)),
+            'limitLevel': safe_float(position_data.get('profitLevel', 0)),  # ← CORRECTO
             'dealId': position_data.get('dealId', '')
         })
     

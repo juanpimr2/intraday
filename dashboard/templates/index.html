@@ -7,17 +7,31 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <h1>🤖 Trading Bot Dashboard</h1>
-            <div class="status-indicator">
-                <span id="status-dot" class="dot"></span>
-                <span id="status-text">Conectando...</span>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <h1>Trading Bot Dashboard</h1>
+            
+            <div class="status-control">
+                <div class="status-indicator">
+                    <div id="status-dot" class="dot offline"></div>
+                    <span id="status-text">Cargando...</span>
+                </div>
+                
+                <div class="control-buttons">
+                    <button id="start-btn" class="btn btn-primary" onclick="startBot()" disabled>
+                        ▶️ Iniciar
+                    </button>
+                    <button id="stop-btn" class="btn btn-danger" onclick="stopBot()" disabled>
+                        ⏸️ Pausar
+                    </button>
+                </div>
             </div>
-        </header>
+        </div>
+    </header>
 
-        <!-- Account Info -->
+    <div class="container">
+        <!-- Account Status -->
         <section class="card">
             <h2>💼 Estado de la Cuenta</h2>
             <div class="stats-grid">
@@ -35,61 +49,60 @@
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">% Margen</div>
-                    <div class="stat-value" id="margin-percent">0%</div>
+                    <div class="stat-value" id="margin-percent">0.0%</div>
                 </div>
             </div>
         </section>
 
-        <!-- Positions -->
+        <!-- Open Positions -->
         <section class="card">
             <h2>📊 Posiciones Abiertas (<span id="positions-count">0</span>)</h2>
-            <div id="positions-container">
+            <div id="positions-container" class="positions-container">
                 <p class="loading">Cargando posiciones...</p>
             </div>
         </section>
 
-        <!-- NEW: Trading History -->
+        <!-- Trades History -->
         <section class="card">
-            <div class="card-header">
-                <h2>📈 Historial de Trades</h2>
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="exportTradesCSV()">
-                        📄 Exportar CSV
-                    </button>
-                    <button class="btn btn-primary" onclick="exportTradesExcel()">
-                        📊 Exportar Excel
-                    </button>
-                    <button class="btn btn-success" onclick="generateReport()">
-                        📑 Reporte Completo
-                    </button>
-                </div>
-            </div>
+            <h2>📈 Historial de Trades</h2>
             
-            <div class="filters">
-                <label>
-                    Sesión:
-                    <select id="session-filter" onchange="loadTrades()">
-                        <option value="">Todas las sesiones</option>
-                    </select>
-                </label>
-                <label>
-                    Límite:
-                    <select id="limit-filter" onchange="loadTrades()">
-                        <option value="20">20</option>
-                        <option value="50" selected>50</option>
-                        <option value="100">100</option>
-                        <option value="200">200</option>
-                    </select>
-                </label>
-                <button class="btn btn-secondary" onclick="loadTrades()">🔄 Actualizar</button>
+            <div class="action-buttons" style="margin-bottom: 1.5rem;">
+                <button class="btn btn-primary" onclick="exportTradesCSV()">
+                    📄 EXPORTAR CSV
+                </button>
+                <button class="btn btn-primary" onclick="exportTradesExcel()">
+                    📊 EXPORTAR EXCEL
+                </button>
+                <button class="btn btn-success" onclick="generateFullReport()">
+                    📑 REPORTE COMPLETO
+                </button>
             </div>
-            
-            <div id="trades-container">
+
+            <div class="form-group">
+                <label class="form-label">Sesión:</label>
+                <select id="session-filter" class="form-control">
+                    <option value="">Todas las sesiones</option>
+                </select>
+
+                <label class="form-label">Límite:</label>
+                <select id="limit-filter" class="form-control">
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                </select>
+
+                <button class="btn btn-primary" onclick="loadTradesHistory()">
+                    🔄 ACTUALIZAR
+                </button>
+            </div>
+
+            <div id="trades-container" class="table-container">
                 <p class="loading">Cargando trades...</p>
             </div>
         </section>
 
-        <!-- NEW: Trading Statistics -->
+        <!-- Statistics -->
         <section class="card">
             <h2>📊 Estadísticas</h2>
             <div id="stats-container">
@@ -97,41 +110,30 @@
             </div>
         </section>
 
-        <!-- NEW: Backtesting -->
+        <!-- Backtesting -->
         <section class="card">
-            <div class="card-header">
-                <h2>🔬 Backtesting</h2>
-            </div>
-            
-            <div class="backtest-form">
-                <div class="form-row">
-                    <label>
-                        Días históricos:
-                        <input type="number" id="backtest-days" value="30" min="1" max="365">
-                    </label>
-                    <label>
-                        Capital inicial:
-                        <input type="number" id="backtest-capital" value="10000" min="100" step="100">
-                    </label>
-                </div>
+            <h2>🔬 Backtesting</h2>
+            <div class="form-group">
+                <label class="form-label">Días históricos:</label>
+                <input type="number" id="backtest-days" value="30" min="1" max="365" class="form-control">
+
+                <label class="form-label">Capital inicial:</label>
+                <input type="number" id="backtest-capital" value="10000" min="100" step="100" class="form-control">
+
                 <button class="btn btn-warning" onclick="runBacktest()">
-                    ▶️ Ejecutar Backtest
+                    🚀 EJECUTAR BACKTEST
                 </button>
             </div>
             
-            <div id="backtest-results" style="display: none;">
-                <h3>Resultados del Backtest</h3>
-                <div class="stats-grid" id="backtest-stats"></div>
-                <div id="backtest-trades-list"></div>
-            </div>
+            <div id="backtest-results" style="margin-top: 1.5rem;"></div>
         </section>
 
-        <!-- NEW: Recent Signals -->
+        <!-- Recent Signals -->
         <section class="card">
-            <div class="card-header">
-                <h2>🎯 Señales Recientes</h2>
-                <button class="btn btn-secondary" onclick="loadSignals()">🔄 Actualizar</button>
-            </div>
+            <h2>🎯 Señales Recientes</h2>
+            <button class="btn btn-primary" onclick="loadRecentSignals()" style="margin-bottom: 1rem;">
+                🔄 ACTUALIZAR
+            </button>
             <div id="signals-container">
                 <p class="loading">Cargando señales...</p>
             </div>
@@ -140,24 +142,21 @@
         <!-- Configuration -->
         <section class="card">
             <h2>⚙️ Configuración</h2>
-            <div class="config-grid" id="config-container">
+            <div id="config-container">
                 <p class="loading">Cargando configuración...</p>
             </div>
         </section>
-
-        <!-- Footer -->
-        <footer>
-            <p>Última actualización: <span id="last-update">--:--:--</span></p>
-            <p>Auto-refresh cada 10 segundos</p>
-        </footer>
     </div>
 
-    <!-- Loading Overlay -->
-    <div id="loading-overlay" style="display: none;">
-        <div class="spinner"></div>
-        <p>Procesando...</p>
-    </div>
+    <!-- Footer -->
+    <footer class="footer">
+        <p>Trading Bot Dashboard v6.0 | Última actualización: <span id="last-update" class="last-update">--:--:--</span></p>
+    </footer>
 
+    <!-- Toast Notification -->
+    <div id="toast" class="toast"></div>
+
+    <!-- JavaScript -->
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
 </html>

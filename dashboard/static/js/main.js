@@ -1,7 +1,14 @@
-// Auto-refresh cada 10 segundos
-const REFRESH_INTERVAL = 10000;
+// ============================================
+// TRADING BOT DASHBOARD - MAIN JAVASCRIPT
+// Optimized & Clean Code
+// ============================================
 
-// Función para formatear moneda
+const REFRESH_INTERVAL = 10000; // 10 segundos
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
+
 function formatCurrency(amount) {
     return new Intl.NumberFormat('es-ES', {
         style: 'currency',
@@ -9,15 +16,18 @@ function formatCurrency(amount) {
     }).format(amount);
 }
 
-// Función para actualizar timestamp
 function updateTimestamp() {
     const now = new Date();
-    document.getElementById('last-update').textContent = now.toLocaleTimeString('es-ES');
+    const element = document.getElementById('last-update');
+    if (element) {
+        element.textContent = now.toLocaleTimeString('es-ES');
+    }
 }
 
-// Función para mostrar notificaciones
 function showToast(message, type = 'info') {
     const toast = document.getElementById('toast');
+    if (!toast) return;
+    
     toast.textContent = message;
     toast.className = `toast toast-${type} show`;
     
@@ -26,7 +36,10 @@ function showToast(message, type = 'info') {
     }, 3000);
 }
 
-// Función para actualizar cuenta
+// ============================================
+// API CALLS - ACCOUNT
+// ============================================
+
 async function updateAccount() {
     try {
         const response = await fetch('/api/account');
@@ -37,17 +50,25 @@ async function updateAccount() {
             return;
         }
         
-        document.getElementById('balance').textContent = formatCurrency(data.balance);
-        document.getElementById('available').textContent = formatCurrency(data.available);
-        document.getElementById('margin-used').textContent = formatCurrency(data.margin_used);
-        document.getElementById('margin-percent').textContent = data.margin_percent.toFixed(1) + '%';
+        const balanceEl = document.getElementById('balance');
+        const availableEl = document.getElementById('available');
+        const marginUsedEl = document.getElementById('margin-used');
+        const marginPercentEl = document.getElementById('margin-percent');
+        
+        if (balanceEl) balanceEl.textContent = formatCurrency(data.balance);
+        if (availableEl) availableEl.textContent = formatCurrency(data.available);
+        if (marginUsedEl) marginUsedEl.textContent = formatCurrency(data.margin_used);
+        if (marginPercentEl) marginPercentEl.textContent = data.margin_percent.toFixed(1) + '%';
         
     } catch (error) {
         console.error('Error actualizando cuenta:', error);
     }
 }
 
-// Función para actualizar posiciones - MEJORADA
+// ============================================
+// API CALLS - POSITIONS
+// ============================================
+
 async function updatePositions() {
     try {
         const response = await fetch('/api/positions');
@@ -55,99 +76,54 @@ async function updatePositions() {
         
         if (data.error) {
             console.error('Error:', data.error);
-            showToast('Error obteniendo posiciones', 'error');
             return;
         }
         
-        document.getElementById('positions-count').textContent = data.count;
-        
+        const countEl = document.getElementById('positions-count');
         const container = document.getElementById('positions-container');
         
+        if (countEl) countEl.textContent = data.count;
+        if (!container) return;
+        
         if (data.count === 0) {
-            container.innerHTML = '<p class="loading">No hay posiciones abiertas</p>';
+            container.innerHTML = '<p class="empty-state">No hay posiciones abiertas</p>';
             return;
         }
         
         let html = '';
         data.positions.forEach(pos => {
             const directionClass = pos.direction.toLowerCase();
+            const tpDisplay = pos.limitLevel && pos.limitLevel > 0 
+                ? formatCurrency(pos.limitLevel) 
+                : '<span class="text-warning">N/A (no configurado)</span>';
             
-            // ============================================
-            // EPIC - Detectar si es "Unknown"
-            // ============================================
-            let epicDisplay = pos.epic;
-            let epicWarning = '';
-            
-            if (pos.epic === 'Unknown' || !pos.epic) {
-                epicDisplay = '⚠️ Unknown';
-                epicWarning = '<div class="warning-badge">⚠️ Epic no detectado</div>';
-            }
-            
-            // ============================================
-            // TAKE PROFIT - Detectar si falta
-            // ============================================
-            let tpDisplay = 'N/A';
-            let tpWarning = '';
-            
-            if (pos.limitLevel && pos.limitLevel > 0) {
-                tpDisplay = formatCurrency(pos.limitLevel);
-            } else {
-                tpDisplay = '⚠️ N/A';
-                tpWarning = '<span class="text-warning"> (no configurado)</span>';
-            }
-            
-            // ============================================
-            // STOP LOSS - Detectar si falta
-            // ============================================
-            let slDisplay = 'N/A';
-            let slWarning = '';
-            
-            if (pos.stopLevel && pos.stopLevel > 0) {
-                slDisplay = formatCurrency(pos.stopLevel);
-            } else {
-                slDisplay = '⚠️ N/A';
-                slWarning = '<span class="text-warning"> (no configurado)</span>';
-            }
-            
-            // ============================================
-            // CALCULAR DURACIÓN
-            // ============================================
-            let durationDisplay = '';
-            if (pos.createdDate) {
-                try {
-                    const created = new Date(pos.createdDate);
-                    const now = new Date();
-                    const diffMs = now - created;
-                    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-                    const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-                    
-                    if (diffHours > 0) {
-                        durationDisplay = `${diffHours}h ${diffMinutes}m`;
-                    } else {
-                        durationDisplay = `${diffMinutes}m`;
-                    }
-                } catch (e) {
-                    durationDisplay = 'N/A';
-                }
-            }
-            
-            // ============================================
-            // RENDERIZAR HTML
-            // ============================================
             html += `
-                <div class="position-item ${pos.epic === 'Unknown' ? 'position-warning' : ''}">
+                <div class="position-card ${directionClass}">
                     <div class="position-header">
-                        <span class="position-epic">${epicDisplay}</span>
+                        <span class="position-epic">${pos.epic}</span>
                         <span class="position-direction ${directionClass}">${pos.direction}</span>
                     </div>
-                    ${epicWarning}
                     <div class="position-details">
-                        <div><strong>Size:</strong> ${pos.size}</div>
-                        <div><strong>Entry:</strong> ${formatCurrency(pos.level)}</div>
-                        <div><strong>Stop Loss:</strong> ${slDisplay}${slWarning}</div>
-                        <div><strong>Take Profit:</strong> ${tpDisplay}${tpWarning}</div>
-                        ${durationDisplay ? `<div><strong>Duración:</strong> ${durationDisplay}</div>` : ''}
-                        ${pos.dealId ? `<div><strong>Deal ID:</strong> ${pos.dealId}</div>` : ''}
+                        <div class="position-detail-item">
+                            <span class="detail-label">Tamaño</span>
+                            <span class="detail-value">${pos.size}</span>
+                        </div>
+                        <div class="position-detail-item">
+                            <span class="detail-label">Precio Entrada</span>
+                            <span class="detail-value">${formatCurrency(pos.level)}</span>
+                        </div>
+                        <div class="position-detail-item">
+                            <span class="detail-label">Stop Loss</span>
+                            <span class="detail-value">${formatCurrency(pos.stopLevel)}</span>
+                        </div>
+                        <div class="position-detail-item">
+                            <span class="detail-label">Take Profit</span>
+                            <span class="detail-value">${tpDisplay}</span>
+                        </div>
+                        <div class="position-detail-item">
+                            <span class="detail-label">Deal ID</span>
+                            <span class="detail-value" style="font-size: 0.75rem;">${pos.dealId}</span>
+                        </div>
                     </div>
                 </div>
             `;
@@ -157,42 +133,47 @@ async function updatePositions() {
         
     } catch (error) {
         console.error('Error actualizando posiciones:', error);
-        showToast('Error de conexión al obtener posiciones', 'error');
     }
 }
 
-// Función para actualizar configuración
+// ============================================
+// API CALLS - CONFIGURATION
+// ============================================
+
 async function updateConfig() {
     try {
         const response = await fetch('/api/config');
         const data = await response.json();
         
         const container = document.getElementById('config-container');
+        if (!container) return;
         
         const html = `
-            <div class="config-item">
-                <div class="config-label">Activos</div>
-                <div class="config-value">${data.assets.join(', ')}</div>
-            </div>
-            <div class="config-item">
-                <div class="config-label">Posiciones Máximas</div>
-                <div class="config-value">${data.max_positions}</div>
-            </div>
-            <div class="config-item">
-                <div class="config-label">% Margen Objetivo</div>
-                <div class="config-value">${data.target_percent.toFixed(0)}%</div>
-            </div>
-            <div class="config-item">
-                <div class="config-label">Riesgo Máximo</div>
-                <div class="config-value">${data.max_risk.toFixed(0)}%</div>
-            </div>
-            <div class="config-item">
-                <div class="config-label">Timeframe</div>
-                <div class="config-value">${data.timeframe}</div>
-            </div>
-            <div class="config-item">
-                <div class="config-label">Horario Trading</div>
-                <div class="config-value">${data.trading_hours}</div>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Activos</div>
+                    <div class="stat-value" style="font-size: 1rem;">${data.assets.join(', ')}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Posiciones Máximas</div>
+                    <div class="stat-value">${data.max_positions}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">% Margen Objetivo</div>
+                    <div class="stat-value">${data.target_percent.toFixed(0)}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Riesgo Máximo</div>
+                    <div class="stat-value">${data.max_risk.toFixed(0)}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Timeframe</div>
+                    <div class="stat-value">${data.timeframe}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Horario Trading</div>
+                    <div class="stat-value" style="font-size: 1rem;">${data.trading_hours}</div>
+                </div>
             </div>
         `;
         
@@ -203,7 +184,10 @@ async function updateConfig() {
     }
 }
 
-// Función para actualizar estado
+// ============================================
+// API CALLS - BOT STATUS
+// ============================================
+
 async function updateStatus() {
     try {
         const response = await fetch('/api/status');
@@ -213,6 +197,11 @@ async function updateStatus() {
         const statusText = document.getElementById('status-text');
         const startBtn = document.getElementById('start-btn');
         const stopBtn = document.getElementById('stop-btn');
+        
+        if (!statusDot || !statusText || !startBtn || !stopBtn) {
+            console.error('Elementos del DOM no encontrados');
+            return;
+        }
         
         if (data.running) {
             statusDot.className = 'dot online';
@@ -230,13 +219,15 @@ async function updateStatus() {
         console.error('Error actualizando estado:', error);
         const statusDot = document.getElementById('status-dot');
         const statusText = document.getElementById('status-text');
-        statusDot.className = 'dot offline';
-        statusText.textContent = '🔴 Error de conexión';
+        if (statusDot && statusText) {
+            statusDot.className = 'dot offline';
+            statusText.textContent = '🔴 Error de conexión';
+        }
     }
 }
 
 // ============================================
-// CONTROL DEL BOT
+// BOT CONTROL
 // ============================================
 
 async function startBot() {
@@ -246,14 +237,14 @@ async function startBot() {
         const data = await response.json();
         
         if (data.success) {
-            showToast('✅ Bot iniciado correctamente', 'success');
+            showToast('Bot iniciado correctamente', 'success');
             await updateStatus();
         } else {
-            showToast('❌ Error al iniciar bot', 'error');
+            showToast('Error al iniciar bot', 'error');
         }
     } catch (error) {
         console.error('Error iniciando bot:', error);
-        showToast('❌ Error de conexión', 'error');
+        showToast('Error de conexión', 'error');
     }
 }
 
@@ -264,204 +255,287 @@ async function stopBot() {
         const data = await response.json();
         
         if (data.success) {
-            showToast('⏸️ Bot pausado correctamente', 'success');
+            showToast('Bot pausado correctamente', 'success');
             await updateStatus();
         } else {
-            showToast('❌ Error al pausar bot', 'error');
+            showToast('Error al pausar bot', 'error');
         }
     } catch (error) {
         console.error('Error pausando bot:', error);
-        showToast('❌ Error de conexión', 'error');
+        showToast('Error de conexión', 'error');
     }
 }
 
 // ============================================
-// EXPORT DE DATOS
+// TRADES HISTORY
 // ============================================
 
-async function exportBacktest() {
+async function loadTradesHistory() {
     try {
-        showToast('Descargando backtest results...', 'info');
-        window.location.href = '/api/export/backtest';
-    } catch (error) {
-        console.error('Error exportando backtest:', error);
-        showToast('❌ Error al exportar', 'error');
-    }
-}
-
-async function exportTrades() {
-    try {
-        showToast('Descargando trading history...', 'info');
-        window.location.href = '/api/export/trades';
-    } catch (error) {
-        console.error('Error exportando trades:', error);
-        showToast('❌ Error al exportar', 'error');
-    }
-}
-
-async function exportLogs() {
-    try {
-        showToast('Descargando logs...', 'info');
-        window.location.href = '/api/export/logs';
-    } catch (error) {
-        console.error('Error exportando logs:', error);
-        showToast('❌ Error al exportar', 'error');
-    }
-}
-
-
-
-
-// Actualizar vista de configuración de capital
-async function updateCapitalConfig() {
-    try {
-        const response = await fetch('/api/config/capital');
+        const sessionId = document.getElementById('session-filter')?.value || '';
+        const limit = document.getElementById('limit-filter')?.value || '50';
+        
+        let url = `/api/trades/history?limit=${limit}`;
+        if (sessionId) url += `&session_id=${sessionId}`;
+        
+        const response = await fetch(url);
         const data = await response.json();
         
-        // Actualizar modo
-        document.getElementById('capital-mode-view').textContent = 
-            data.capital_mode === 'PERCENTAGE' ? 'Porcentaje' : 'Monto Fijo';
+        const container = document.getElementById('trades-container');
+        if (!container) return;
         
-        // Mostrar/ocultar según modo
-        if (data.capital_mode === 'PERCENTAGE') {
-            document.getElementById('percent-view-item').style.display = 'block';
-            document.getElementById('fixed-view-item').style.display = 'none';
-            document.getElementById('capital-percent-view').textContent = 
-                `${data.max_capital_percent.toFixed(1)}%`;
-        } else {
-            document.getElementById('percent-view-item').style.display = 'none';
-            document.getElementById('fixed-view-item').style.display = 'block';
-            document.getElementById('capital-fixed-view').textContent = 
-                formatCurrency(data.max_capital_fixed);
-        }
-        
-        // Actualizar distribución
-        document.getElementById('distribution-mode-view').textContent = 
-            data.distribution_mode === 'EQUAL' ? 'Equitativa' : 'Ponderada';
-        
-    } catch (error) {
-        console.error('Error actualizando config de capital:', error);
-    }
-}
-
-// Mostrar editor de capital
-function toggleCapitalEdit() {
-    document.getElementById('capital-view').style.display = 'none';
-    document.getElementById('capital-edit').style.display = 'block';
-    
-    // Cargar valores actuales
-    loadCurrentCapitalConfig();
-}
-
-// Cargar configuración actual en el editor
-async function loadCurrentCapitalConfig() {
-    try {
-        const response = await fetch('/api/config/capital');
-        const data = await response.json();
-        
-        // Establecer valores
-        document.getElementById('capital-mode-select').value = data.capital_mode;
-        document.getElementById('capital-percent-input').value = data.max_capital_percent;
-        document.getElementById('capital-fixed-input').value = data.max_capital_fixed;
-        document.getElementById('distribution-mode-select').value = data.distribution_mode;
-        
-        // Mostrar/ocultar inputs según modo
-        toggleCapitalModeInputs();
-        
-    } catch (error) {
-        console.error('Error cargando config:', error);
-        showToast('Error cargando configuración', 'error');
-    }
-}
-
-
-// Toggle entre inputs de porcentaje y monto fijo
-function toggleCapitalModeInputs() {
-    const mode = document.getElementById('capital-mode-select').value;
-    
-    if (mode === 'PERCENTAGE') {
-        document.getElementById('percent-input-group').style.display = 'block';
-        document.getElementById('fixed-input-group').style.display = 'none';
-    } else {
-        document.getElementById('percent-input-group').style.display = 'none';
-        document.getElementById('fixed-input-group').style.display = 'block';
-    }
-}
-
-
-// Guardar configuración de capital
-async function saveCapitalConfig() {
-    try {
-        const mode = document.getElementById('capital-mode-select').value;
-        const percent = parseFloat(document.getElementById('capital-percent-input').value);
-        const fixed = parseFloat(document.getElementById('capital-fixed-input').value);
-        const distribution = document.getElementById('distribution-mode-select').value;
-        
-        // Validaciones
-        if (mode === 'PERCENTAGE' && (percent < 1 || percent > 100)) {
-            showToast('El porcentaje debe estar entre 1 y 100', 'error');
+        if (!data.trades || data.trades.length === 0) {
+            container.innerHTML = '<p class="empty-state">No hay trades disponibles</p>';
             return;
         }
         
-        if (mode === 'FIXED' && fixed <= 0) {
-            showToast('El monto debe ser mayor a 0', 'error');
+        let html = '<table><thead><tr>';
+        html += '<th>Epic</th><th>Dirección</th><th>Entrada</th><th>Salida</th>';
+        html += '<th>P&L</th><th>P&L %</th><th>Razón Cierre</th></tr></thead><tbody>';
+        
+        data.trades.forEach(trade => {
+            const pnlClass = trade.pnl >= 0 ? 'text-success' : 'text-danger';
+            html += `
+                <tr>
+                    <td>${trade.epic}</td>
+                    <td>${trade.direction}</td>
+                    <td>${formatCurrency(trade.entry_price)}</td>
+                    <td>${formatCurrency(trade.exit_price)}</td>
+                    <td class="${pnlClass}">${formatCurrency(trade.pnl)}</td>
+                    <td class="${pnlClass}">${trade.pnl_percent.toFixed(2)}%</td>
+                    <td>${trade.close_reason || 'N/A'}</td>
+                </tr>
+            `;
+        });
+        
+        html += '</tbody></table>';
+        container.innerHTML = html;
+        
+    } catch (error) {
+        console.error('Error cargando historial:', error);
+    }
+}
+
+// ============================================
+// STATISTICS
+// ============================================
+
+async function loadStatistics() {
+    try {
+        const response = await fetch('/api/trades/stats');
+        const data = await response.json();
+        
+        const container = document.getElementById('stats-container');
+        if (!container || !data.stats) return;
+        
+        const stats = data.stats;
+        
+        const html = `
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Trades</div>
+                    <div class="stat-value">${stats.total_trades || 0}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Win Rate</div>
+                    <div class="stat-value text-success">${(stats.win_rate || 0).toFixed(1)}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">P&L Total</div>
+                    <div class="stat-value ${stats.total_pnl >= 0 ? 'text-success' : 'text-danger'}">
+                        ${formatCurrency(stats.total_pnl || 0)}
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Profit Factor</div>
+                    <div class="stat-value">${(stats.profit_factor || 0).toFixed(2)}</div>
+                </div>
+            </div>
+        `;
+        
+        container.innerHTML = html;
+        
+    } catch (error) {
+        console.error('Error cargando estadísticas:', error);
+    }
+}
+
+// ============================================
+// EXPORT FUNCTIONS
+// ============================================
+
+async function exportTradesCSV() {
+    try {
+        showToast('Descargando CSV...', 'info');
+        const sessionId = document.getElementById('session-filter')?.value || '';
+        let url = '/api/trades/export/csv';
+        if (sessionId) url += `?session_id=${sessionId}`;
+        
+        window.location.href = url;
+        showToast('CSV descargado', 'success');
+    } catch (error) {
+        console.error('Error exportando CSV:', error);
+        showToast('Error al exportar', 'error');
+    }
+}
+
+async function exportTradesExcel() {
+    try {
+        showToast('Descargando Excel...', 'info');
+        const sessionId = document.getElementById('session-filter')?.value || '';
+        let url = '/api/trades/export/excel';
+        if (sessionId) url += `?session_id=${sessionId}`;
+        
+        window.location.href = url;
+        showToast('Excel descargado', 'success');
+    } catch (error) {
+        console.error('Error exportando Excel:', error);
+        showToast('Error al exportar', 'error');
+    }
+}
+
+async function generateFullReport() {
+    try {
+        const sessionId = document.getElementById('session-filter')?.value;
+        if (!sessionId) {
+            showToast('Selecciona una sesión primero', 'error');
             return;
         }
         
-        // Enviar actualización
-        showToast('Guardando configuración...', 'info');
+        showToast('Generando reporte completo...', 'info');
+        window.location.href = `/api/report/full?session_id=${sessionId}`;
+        showToast('Reporte generado', 'success');
+    } catch (error) {
+        console.error('Error generando reporte:', error);
+        showToast('Error al generar reporte', 'error');
+    }
+}
+
+// ============================================
+// BACKTESTING
+// ============================================
+
+async function runBacktest() {
+    try {
+        const days = document.getElementById('backtest-days')?.value || 30;
+        const capital = document.getElementById('backtest-capital')?.value || 10000;
         
-        const response = await fetch('/api/config/capital', {
+        showToast('Ejecutando backtest...', 'info');
+        
+        const response = await fetch('/api/backtest/run', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                capital_mode: mode,
-                max_capital_percent: percent,
-                max_capital_fixed: fixed,
-                distribution_mode: distribution
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ days: parseInt(days), initial_capital: parseFloat(capital) })
         });
         
         const data = await response.json();
         
-        if (data.success) {
-            showToast('✅ Configuración guardada correctamente', 'success');
-            
-            // Cerrar editor y actualizar vista
-            cancelCapitalEdit();
-            await updateCapitalConfig();
-        } else {
-            showToast('❌ Error: ' + data.error, 'error');
+        if (data.error) {
+            showToast('Error: ' + data.error, 'error');
+            return;
         }
         
+        const container = document.getElementById('backtest-results');
+        if (!container) return;
+        
+        const results = data.results;
+        const html = `
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Capital Final</div>
+                    <div class="stat-value">${formatCurrency(results.final_capital)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Retorno</div>
+                    <div class="stat-value ${results.total_return >= 0 ? 'text-success' : 'text-danger'}">
+                        ${results.total_return_percent.toFixed(2)}%
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Win Rate</div>
+                    <div class="stat-value text-success">${results.win_rate.toFixed(1)}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Trades</div>
+                    <div class="stat-value">${results.total_trades}</div>
+                </div>
+            </div>
+        `;
+        
+        container.innerHTML = html;
+        showToast('Backtest completado', 'success');
+        
     } catch (error) {
-        console.error('Error guardando config:', error);
-        showToast('❌ Error de conexión', 'error');
+        console.error('Error en backtest:', error);
+        showToast('Error ejecutando backtest', 'error');
     }
 }
 
-// Cancelar edición
-function cancelCapitalEdit() {
-    document.getElementById('capital-view').style.display = 'grid';
-    document.getElementById('capital-edit').style.display = 'none';
+// ============================================
+// SIGNALS
+// ============================================
+
+async function loadRecentSignals() {
+    try {
+        const response = await fetch('/api/signals/recent?limit=20');
+        const data = await response.json();
+        
+        const container = document.getElementById('signals-container');
+        if (!container) return;
+        
+        if (!data.signals || data.signals.length === 0) {
+            container.innerHTML = '<p class="empty-state">No hay señales recientes</p>';
+            return;
+        }
+        
+        let html = '<table><thead><tr>';
+        html += '<th>Epic</th><th>Señal</th><th>Confianza</th><th>Precio</th><th>Timestamp</th></tr></thead><tbody>';
+        
+        data.signals.forEach(signal => {
+            const confidenceClass = signal.confidence >= 0.7 ? 'text-success' : signal.confidence >= 0.5 ? 'text-warning' : 'text-danger';
+            html += `
+                <tr>
+                    <td>${signal.epic}</td>
+                    <td>${signal.signal}</td>
+                    <td class="${confidenceClass}">${(signal.confidence * 100).toFixed(1)}%</td>
+                    <td>${formatCurrency(signal.price)}</td>
+                    <td>${new Date(signal.timestamp).toLocaleString('es-ES')}</td>
+                </tr>
+            `;
+        });
+        
+        html += '</tbody></table>';
+        container.innerHTML = html;
+        
+    } catch (error) {
+        console.error('Error cargando señales:', error);
+    }
 }
 
-// Función para actualizar todo
+// ============================================
+// MAIN UPDATE FUNCTION
+// ============================================
+
 async function updateAll() {
     updateTimestamp();
     await Promise.all([
         updateAccount(),
         updatePositions(),
         updateConfig(),
-        updateCapitalConfig(),  // ← AGREGAR ESTA LÍNEA
         updateStatus()
     ]);
 }
 
-// Inicializar al cargar la página
+// ============================================
+// INITIALIZATION
+// ============================================
+
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('Dashboard inicializado');
     updateAll();
+    loadTradesHistory();
+    loadStatistics();
+    
+    // Auto-refresh
     setInterval(updateAll, REFRESH_INTERVAL);
 });
