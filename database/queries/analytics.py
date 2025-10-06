@@ -1,315 +1,428 @@
 """
-Queries de análisis y reportes
+Queries de analytics para reporting y exports
+VERSIÓN COMPLETA con todos los métodos necesarios
 """
 
 import pandas as pd
-from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime
+from typing import Dict, List, Optional
 from database.connection import DatabaseConnection
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyticsQueries:
-    """Queries de análisis y reportes"""
+    """Queries de analytics y reporting"""
     
     def __init__(self):
         self.db = DatabaseConnection()
     
-    def get_session_summary(self, session_id: Optional[int] = None, limit: int = 10) -> pd.DataFrame:
+    # ============================================
+    # SESIONES
+    # ============================================
+    
+    def get_sessions_summary(self, limit: int = 20) -> List[Dict]:
         """Obtiene resumen de sesiones"""
-        query = "SELECT * FROM v_session_summary"
-        params = []
-        
-        if session_id:
-            query += " WHERE session_id = %s"
-            params.append(session_id)
-        
-        query += f" LIMIT {limit}"
-        
-        with self.db.get_cursor(commit=False) as cursor:
-            cursor.execute(query, params)
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            
-            return pd.DataFrame(data, columns=columns)
-    
-    def get_trade_analysis(self, session_id: Optional[int] = None, 
-                          epic: Optional[str] = None,
-                          limit: int = 100) -> pd.DataFrame:
-        """Análisis detallado de trades"""
-        query = "SELECT * FROM v_trade_analysis WHERE 1=1"
-        params = []
-        
-        if session_id:
-            query += " AND session_id = %s"
-            params.append(session_id)
-        
-        if epic:
-            query += " AND epic = %s"
-            params.append(epic)
-        
-        query += f" ORDER BY entry_time DESC LIMIT {limit}"
-        
-        with self.db.get_cursor(commit=False) as cursor:
-            cursor.execute(query, params)
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            
-            return pd.DataFrame(data, columns=columns)
-    
-    def get_epic_performance(self, session_id: Optional[int] = None) -> pd.DataFrame:
-        """Performance por activo"""
-        if session_id:
-            query = """
-                SELECT 
-                    t.epic,
-                    COUNT(*) AS total_trades,
-                    SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) AS wins,
-                    SUM(CASE WHEN t.pnl < 0 THEN 1 ELSE 0 END) AS losses,
-                    ROUND((SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)::decimal / COUNT(*) * 100)::numeric, 2) AS win_rate,
-                    SUM(t.pnl) AS total_pnl,
-                    AVG(t.pnl) AS avg_pnl,
-                    MAX(t.pnl) AS best_trade,
-                    MIN(t.pnl) AS worst_trade
-                FROM trades t
-                WHERE t.status = 'CLOSED' AND t.session_id = %s
-                GROUP BY t.epic
-                ORDER BY total_pnl DESC
-            """
-            params = [session_id]
-        else:
-            query = "SELECT * FROM v_epic_performance"
-            params = []
-        
-        with self.db.get_cursor(commit=False) as cursor:
-            cursor.execute(query, params)
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            
-            return pd.DataFrame(data, columns=columns)
-    
-    def get_daily_performance(self, session_id: Optional[int] = None,
-                             days: int = 30) -> pd.DataFrame:
-        """Performance diaria"""
-        query = "SELECT * FROM v_daily_performance WHERE 1=1"
-        params = []
-        
-        if session_id:
-            query += " AND session_id = %s"
-            params.append(session_id)
-        
-        query += f" ORDER BY trade_date DESC LIMIT {days}"
-        
-        with self.db.get_cursor(commit=False) as cursor:
-            cursor.execute(query, params)
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            
-            return pd.DataFrame(data, columns=columns)
-    
-    def compare_strategy_versions(self) -> pd.DataFrame:
-        """Compara todas las versiones de estrategia"""
-        with self.db.get_cursor(commit=False) as cursor:
-            cursor.execute("SELECT * FROM v_strategy_comparison")
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            
-            return pd.DataFrame(data, columns=columns)
-
-    def compare_two_versions(self, version1: str, version2: str) -> Dict:
-        """Compara dos versiones específicas"""
         query = """
-            SELECT 
-                sv.version_name,
-                COUNT(DISTINCT s.session_id) AS sessions,
-                SUM(s.total_trades) AS total_trades,
-                AVG(CASE WHEN s.total_trades > 0 
-                    THEN s.winning_trades::decimal / s.total_trades * 100 
-                    ELSE 0 END) AS avg_win_rate,
-                SUM(s.total_pnl) AS total_pnl,
-                AVG(s.max_drawdown) AS avg_drawdown,
-                AVG(t.duration_minutes) AS avg_trade_duration,
-                AVG(t.pnl) AS avg_pnl_per_trade,
-                SUM(CASE WHEN t.exit_reason = 'TAKE_PROFIT' THEN 1 ELSE 0 END) AS tp_hits,
-                SUM(CASE WHEN t.exit_reason = 'STOP_LOSS' THEN 1 ELSE 0 END) AS sl_hits
-            FROM strategy_versions sv
-            LEFT JOIN trading_sessions s ON sv.version_id = s.strategy_version_id
-            LEFT JOIN trades t ON s.session_id = t.session_id AND t.status = 'CLOSED'
-            WHERE sv.version_name IN (%s, %s)
-            GROUP BY sv.version_name
-            ORDER BY sv.version_name
+            SELECT * FROM v_session_summary
+            ORDER BY start_time DESC
+            LIMIT %s
         """
         
-        with self.db.get_cursor(commit=False) as cursor:
-            cursor.execute(query, (version1, version2))
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            
-            df = pd.DataFrame(data, columns=columns)
-            
-            if len(df) < 2:
-                return {'error': 'Una o ambas versiones no encontradas'}
-            
-            v1_data = df.iloc[0].to_dict()
-            v2_data = df.iloc[1].to_dict()
-            
-            comparison = {
-                'version1': v1_data,
-                'version2': v2_data,
-                'differences': {
-                    'win_rate_diff': float(v2_data['avg_win_rate'] - v1_data['avg_win_rate']),
-                    'pnl_diff': float(v2_data['total_pnl'] - v1_data['total_pnl']),
-                    'drawdown_diff': float(v2_data['avg_drawdown'] - v1_data['avg_drawdown']),
-                    'trades_diff': int(v2_data['total_trades'] - v1_data['total_trades'])
-                },
-                'winner': None
-            }
-            
-            score_v1 = 0
-            score_v2 = 0
-            
-            if v2_data['avg_win_rate'] > v1_data['avg_win_rate']:
-                score_v2 += 1
-            else:
-                score_v1 += 1
-            
-            if v2_data['total_pnl'] > v1_data['total_pnl']:
-                score_v2 += 1
-            else:
-                score_v1 += 1
-            
-            if v2_data['avg_drawdown'] < v1_data['avg_drawdown']:
-                score_v2 += 1
-            else:
-                score_v1 += 1
-            
-            comparison['winner'] = version2 if score_v2 > score_v1 else version1
-            comparison['score'] = {'v1': score_v1, 'v2': score_v2}
-            
-            return comparison
+        with self.db.get_cursor() as cursor:
+            cursor.execute(query, (limit,))
+            return cursor.fetchall()
     
-    def get_signal_effectiveness(self, epic: Optional[str] = None) -> pd.DataFrame:
-        """Análisis de efectividad de señales"""
-        query = "SELECT * FROM v_signal_effectiveness"
-        params = []
+    def get_session_info(self, session_id: int) -> Dict:
+        """Obtiene información de una sesión específica"""
+        query = """
+            SELECT * FROM v_session_summary
+            WHERE session_id = %s
+        """
         
-        if epic:
-            query += " WHERE epic = %s"
-            params.append(epic)
-        
-        query += " ORDER BY win_rate_of_executed DESC NULLS LAST"
-        
-        with self.db.get_cursor(commit=False) as cursor:
-            cursor.execute(query, params)
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            
-            return pd.DataFrame(data, columns=columns)
+        with self.db.get_cursor() as cursor:
+            cursor.execute(query, (session_id,))
+            result = cursor.fetchone()
+            return result if result else {}
     
-    def get_exit_reason_analysis(self, session_id: Optional[int] = None) -> pd.DataFrame:
-        """Análisis por razón de salida"""
+    # ============================================
+    # TRADES
+    # ============================================
+    
+    def get_trades_by_session(self, session_id: int) -> List[Dict]:
+        """Obtiene todos los trades de una sesión"""
+        query = """
+            SELECT 
+                trade_id,
+                epic,
+                direction,
+                entry_price,
+                exit_price,
+                size,
+                pnl,
+                pnl_percent,
+                entry_date,
+                exit_date,
+                reason,
+                confidence
+            FROM trades
+            WHERE session_id = %s
+            ORDER BY entry_date DESC
+        """
+        
+        with self.db.get_cursor() as cursor:
+            cursor.execute(query, (session_id,))
+            return cursor.fetchall()
+    
+    def get_recent_trades(self, limit: int = 100) -> List[Dict]:
+        """Obtiene los últimos N trades"""
+        query = """
+            SELECT 
+                trade_id,
+                session_id,
+                epic,
+                direction,
+                entry_price,
+                exit_price,
+                size,
+                pnl,
+                pnl_percent,
+                entry_date,
+                exit_date,
+                reason,
+                confidence
+            FROM trades
+            ORDER BY entry_date DESC
+            LIMIT %s
+        """
+        
+        with self.db.get_cursor() as cursor:
+            cursor.execute(query, (limit,))
+            return cursor.fetchall()
+    
+    def get_trade_analysis(self, session_id: Optional[int] = None) -> Dict:
+        """Obtiene análisis detallado de trades"""
         if session_id:
+            query = "SELECT * FROM v_trade_analysis WHERE session_id = %s"
+            params = (session_id,)
+        else:
             query = """
                 SELECT 
-                    t.exit_reason,
-                    COUNT(*) AS total_exits,
-                    SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) AS profitable,
-                    SUM(t.pnl) AS total_pnl,
-                    AVG(t.pnl) AS avg_pnl
-                FROM trades t
-                WHERE t.status = 'CLOSED' 
-                    AND t.exit_reason IS NOT NULL
-                    AND t.session_id = %s
-                GROUP BY t.exit_reason
-                ORDER BY total_exits DESC
+                    COUNT(*) as total_trades,
+                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+                    SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losing_trades,
+                    AVG(CASE WHEN pnl > 0 THEN pnl END) as avg_win,
+                    AVG(CASE WHEN pnl < 0 THEN pnl END) as avg_loss,
+                    MAX(CASE WHEN pnl > 0 THEN pnl END) as max_win,
+                    MIN(CASE WHEN pnl < 0 THEN pnl END) as max_loss,
+                    SUM(pnl) as total_pnl
+                FROM trades
             """
-            params = [session_id]
-        else:
-            query = "SELECT * FROM v_exit_reason_analysis"
-            params = []
+            params = None
         
-        with self.db.get_cursor(commit=False) as cursor:
-            cursor.execute(query, params)
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
+        with self.db.get_cursor() as cursor:
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
             
-            return pd.DataFrame(data, columns=columns)
+            result = cursor.fetchone()
+            return result if result else {}
     
-    def get_atr_effectiveness(self, session_id: Optional[int] = None) -> pd.DataFrame:
-        """Análisis de efectividad por ATR"""
-        if session_id:
-            query = """
-                SELECT 
-                    CASE 
-                        WHEN t.atr_at_entry < 0.5 THEN '< 0.5%'
-                        WHEN t.atr_at_entry >= 0.5 AND t.atr_at_entry < 1.0 THEN '0.5-1.0%'
-                        WHEN t.atr_at_entry >= 1.0 AND t.atr_at_entry < 2.0 THEN '1.0-2.0%'
-                        WHEN t.atr_at_entry >= 2.0 AND t.atr_at_entry < 3.0 THEN '2.0-3.0%'
-                        WHEN t.atr_at_entry >= 3.0 THEN '> 3.0%'
-                        ELSE 'Unknown'
-                    END AS atr_range,
-                    COUNT(*) AS trades,
-                    SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) AS wins,
-                    ROUND((SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END)::decimal / COUNT(*) * 100)::numeric, 2) AS win_rate,
-                    SUM(t.pnl) AS total_pnl
-                FROM trades t
-                WHERE t.status = 'CLOSED' 
-                    AND t.atr_at_entry IS NOT NULL
-                    AND t.session_id = %s
-                GROUP BY atr_range
-            """
-            params = [session_id]
-        else:
-            query = "SELECT * FROM v_atr_effectiveness"
-            params = []
+    def get_global_stats(self) -> Dict:
+        """Estadísticas globales de todos los trades"""
+        return self.get_trade_analysis(session_id=None)
+    
+    # ============================================
+    # SEÑALES
+    # ============================================
+    
+    def get_signals_by_session(self, session_id: int) -> List[Dict]:
+        """Obtiene señales de una sesión"""
+        query = """
+            SELECT 
+                signal_id,
+                epic,
+                signal_type,
+                confidence,
+                current_price,
+                indicators,
+                reasons,
+                executed,
+                created_at
+            FROM market_signals
+            WHERE session_id = %s
+            ORDER BY created_at DESC
+        """
         
-        with self.db.get_cursor(commit=False) as cursor:
-            cursor.execute(query, params)
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
+        with self.db.get_cursor() as cursor:
+            cursor.execute(query, (session_id,))
+            return cursor.fetchall()
+    
+    def get_recent_signals(self, limit: int = 50) -> List[Dict]:
+        """Obtiene las señales más recientes"""
+        query = """
+            SELECT 
+                signal_id,
+                session_id,
+                epic,
+                signal_type,
+                confidence,
+                current_price,
+                indicators,
+                reasons,
+                executed,
+                created_at
+            FROM market_signals
+            ORDER BY created_at DESC
+            LIMIT %s
+        """
+        
+        with self.db.get_cursor() as cursor:
+            cursor.execute(query, (limit,))
+            return cursor.fetchall()
+    
+    # ============================================
+    # EXPORTS
+    # ============================================
+    
+    def export_trades(self, session_id: int, format: str = 'csv') -> str:
+        """
+        Exporta trades de una sesión a CSV o Excel
+        
+        Args:
+            session_id: ID de la sesión
+            format: 'csv' o 'excel'
             
-            return pd.DataFrame(data, columns=columns)
+        Returns:
+            str: Path del archivo generado
+        """
+        trades = self.get_trades_by_session(session_id)
+        
+        if not trades:
+            logger.warning(f"No hay trades para exportar en sesión {session_id}")
+            return None
+        
+        # Convertir a DataFrame
+        df = pd.DataFrame(trades)
+        
+        # Formatear fechas
+        if 'entry_date' in df.columns:
+            df['entry_date'] = pd.to_datetime(df['entry_date'])
+        if 'exit_date' in df.columns:
+            df['exit_date'] = pd.to_datetime(df['exit_date'])
+        
+        # Generar filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if format == 'csv':
+            filename = f'exports/trades_session_{session_id}_{timestamp}.csv'
+            df.to_csv(filename, index=False, encoding='utf-8')
+        elif format == 'excel':
+            filename = f'exports/trades_session_{session_id}_{timestamp}.xlsx'
+            df.to_excel(filename, index=False, sheet_name='Trades')
+        else:
+            raise ValueError(f"Formato no válido: {format}")
+        
+        logger.info(f"Trades exportados a {filename}")
+        return filename
+    
+    def export_all_trades(self, format: str = 'csv') -> str:
+        """Exporta todos los trades"""
+        trades = self.get_recent_trades(limit=10000)
+        
+        if not trades:
+            logger.warning("No hay trades para exportar")
+            return None
+        
+        df = pd.DataFrame(trades)
+        
+        # Formatear fechas
+        if 'entry_date' in df.columns:
+            df['entry_date'] = pd.to_datetime(df['entry_date'])
+        if 'exit_date' in df.columns:
+            df['exit_date'] = pd.to_datetime(df['exit_date'])
+        
+        # Generar filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if format == 'csv':
+            filename = f'exports/all_trades_{timestamp}.csv'
+            df.to_csv(filename, index=False, encoding='utf-8')
+        elif format == 'excel':
+            filename = f'exports/all_trades_{timestamp}.xlsx'
+            df.to_excel(filename, index=False, sheet_name='All Trades')
+        else:
+            raise ValueError(f"Formato no válido: {format}")
+        
+        logger.info(f"Todos los trades exportados a {filename}")
+        return filename
     
     def export_full_report(self, session_id: int, format: str = 'excel') -> str:
-        """Genera reporte completo de una sesión"""
-        from datetime import datetime
-        import os
+        """
+        Genera un reporte completo con múltiples hojas
         
-        export_dir = 'exports'
-        os.makedirs(export_dir, exist_ok=True)
+        Args:
+            session_id: ID de la sesión
+            format: Solo 'excel' soportado
+            
+        Returns:
+            str: Path del archivo generado
+        """
+        if format != 'excel':
+            raise ValueError("Solo formato Excel soportado para reportes completos")
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        base_filename = f'session_{session_id}_{timestamp}'
+        # Obtener datos
+        session_info = self.get_session_info(session_id)
+        trades = self.get_trades_by_session(session_id)
+        stats = self.get_trade_analysis(session_id)
+        signals = self.get_signals_by_session(session_id)
         
-        if format == 'excel':
-            filepath = os.path.join(export_dir, f'{base_filename}.xlsx')
-            
-            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-                self.get_session_summary(session_id).to_excel(writer, sheet_name='Summary', index=False)
-                self.get_trade_analysis(session_id).to_excel(writer, sheet_name='Trades', index=False)
-                self.get_epic_performance(session_id).to_excel(writer, sheet_name='By Epic', index=False)
-                self.get_daily_performance(session_id).to_excel(writer, sheet_name='Daily', index=False)
-                self.get_exit_reason_analysis(session_id).to_excel(writer, sheet_name='Exit Reasons', index=False)
-                self.get_atr_effectiveness(session_id).to_excel(writer, sheet_name='ATR Analysis', index=False)
-            
-            return filepath
+        if not session_info:
+            logger.warning(f"Sesión {session_id} no encontrada")
+            return None
         
-        elif format == 'json':
-            filepath = os.path.join(export_dir, f'{base_filename}.json')
-            
-            report = {
-                'session_id': session_id,
-                'exported_at': datetime.now().isoformat(),
-                'summary': self.get_session_summary(session_id).to_dict(orient='records'),
-                'trades': self.get_trade_analysis(session_id).to_dict(orient='records'),
-                'epic_performance': self.get_epic_performance(session_id).to_dict(orient='records'),
-                'daily_performance': self.get_daily_performance(session_id).to_dict(orient='records')
-            }
-            
-            import json
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(report, f, indent=2, default=str)
-            
-            return filepath
+        # Crear filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f'exports/report_session_{session_id}_{timestamp}.xlsx'
         
+        # Crear Excel writer
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            # Hoja 1: Resumen de la sesión
+            session_df = pd.DataFrame([session_info])
+            session_df.to_excel(writer, sheet_name='Resumen', index=False)
+            
+            # Hoja 2: Trades
+            if trades:
+                trades_df = pd.DataFrame(trades)
+                if 'entry_date' in trades_df.columns:
+                    trades_df['entry_date'] = pd.to_datetime(trades_df['entry_date'])
+                if 'exit_date' in trades_df.columns:
+                    trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'])
+                trades_df.to_excel(writer, sheet_name='Trades', index=False)
+            
+            # Hoja 3: Estadísticas
+            if stats:
+                stats_df = pd.DataFrame([stats])
+                stats_df.to_excel(writer, sheet_name='Estadísticas', index=False)
+            
+            # Hoja 4: Señales
+            if signals:
+                signals_df = pd.DataFrame(signals)
+                if 'created_at' in signals_df.columns:
+                    signals_df['created_at'] = pd.to_datetime(signals_df['created_at'])
+                signals_df.to_excel(writer, sheet_name='Señales', index=False)
+        
+        logger.info(f"Reporte completo generado: {filename}")
+        return filename
+    
+    # ============================================
+    # ANÁLISIS ESPECÍFICOS
+    # ============================================
+    
+    def get_win_rate_by_asset(self, session_id: Optional[int] = None) -> List[Dict]:
+        """Win rate por activo"""
+        if session_id:
+            query = "SELECT * FROM v_win_rate_by_asset WHERE session_id = %s"
+            params = (session_id,)
         else:
-            raise ValueError(f"Formato no soportado: {format}")
+            query = """
+                SELECT 
+                    epic,
+                    COUNT(*) as total_trades,
+                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                    SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+                    ROUND(100.0 * SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) / COUNT(*), 2) as win_rate,
+                    SUM(pnl) as total_pnl
+                FROM trades
+                GROUP BY epic
+                ORDER BY total_trades DESC
+            """
+            params = None
+        
+        with self.db.get_cursor() as cursor:
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            return cursor.fetchall()
+    
+    def get_daily_pnl(self, session_id: Optional[int] = None) -> List[Dict]:
+        """P&L por día"""
+        if session_id:
+            query = """
+                SELECT 
+                    DATE(exit_date) as trade_date,
+                    COUNT(*) as trades,
+                    SUM(pnl) as daily_pnl,
+                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                    SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses
+                FROM trades
+                WHERE session_id = %s AND exit_date IS NOT NULL
+                GROUP BY DATE(exit_date)
+                ORDER BY trade_date DESC
+            """
+            params = (session_id,)
+        else:
+            query = """
+                SELECT 
+                    DATE(exit_date) as trade_date,
+                    COUNT(*) as trades,
+                    SUM(pnl) as daily_pnl,
+                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                    SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses
+                FROM trades
+                WHERE exit_date IS NOT NULL
+                GROUP BY DATE(exit_date)
+                ORDER BY trade_date DESC
+            """
+            params = None
+        
+        with self.db.get_cursor() as cursor:
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            return cursor.fetchall()
+    
+    def get_signal_effectiveness(self, session_id: Optional[int] = None) -> Dict:
+        """Efectividad de las señales (% ejecutadas que fueron ganadoras)"""
+        if session_id:
+            query = """
+                SELECT 
+                    COUNT(DISTINCT ms.signal_id) as total_signals,
+                    SUM(CASE WHEN ms.executed THEN 1 ELSE 0 END) as executed_signals,
+                    COUNT(t.trade_id) as trades_from_signals,
+                    SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+                    AVG(ms.confidence) as avg_confidence
+                FROM market_signals ms
+                LEFT JOIN trades t ON ms.epic = t.epic 
+                    AND ms.created_at BETWEEN t.entry_date - INTERVAL '5 minutes' 
+                    AND t.entry_date + INTERVAL '5 minutes'
+                WHERE ms.session_id = %s
+            """
+            params = (session_id,)
+        else:
+            query = """
+                SELECT 
+                    COUNT(DISTINCT ms.signal_id) as total_signals,
+                    SUM(CASE WHEN ms.executed THEN 1 ELSE 0 END) as executed_signals,
+                    COUNT(t.trade_id) as trades_from_signals,
+                    SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+                    AVG(ms.confidence) as avg_confidence
+                FROM market_signals ms
+                LEFT JOIN trades t ON ms.epic = t.epic 
+                    AND ms.created_at BETWEEN t.entry_date - INTERVAL '5 minutes' 
+                    AND t.entry_date + INTERVAL '5 minutes'
+            """
+            params = None
+        
+        with self.db.get_cursor() as cursor:
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            
+            result = cursor.fetchone()
+            return result if result else {}

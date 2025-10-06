@@ -66,7 +66,7 @@ try:
             print("   Ejecuta: python database/migrations/migration_runner.py migrate")
             sys.exit(1)
         
-        # Verificar columnas de la tabla trades
+        # ✅ VERIFICAR COLUMNAS DE LA TABLA TRADES
         cursor.execute("""
             SELECT column_name, data_type 
             FROM information_schema.columns 
@@ -76,14 +76,8 @@ try:
         """)
         columns = cursor.fetchall()
         print(f"\n   📋 Columnas de tabla 'trades': {len(columns)}")
-        
-        # Verificar que existe 'position_size'
-        column_names = [col['column_name'] for col in columns]
-        if 'position_size' in column_names:
-            print(f"      ✅ Columna 'position_size' existe")
-        else:
-            print(f"      ❌ ERROR: Columna 'position_size' no existe")
-            print(f"      Columnas encontradas: {', '.join(column_names[:10])}")
+        for col in columns[:10]:  # Mostrar primeras 10
+            print(f"      - {col['column_name']} ({col['data_type']})")
         
 except Exception as e:
     print(f"   ❌ Error verificando tablas: {e}")
@@ -137,14 +131,14 @@ try:
     signal_id = db_manager.save_signal(test_signal)
     print(f"   ✅ Señal guardada - ID: {signal_id}")
     
-    # Guardar trade de prueba
+    # Guardar trade de prueba (✅ CORREGIDO: usar nombres correctos)
     test_trade = {
         'signal_id': signal_id,
-        'deal_reference': 'TEST_DEAL_789',
+        'deal_reference': 'TEST_DEAL_456',
         'epic': 'TEST_EPIC',
         'direction': 'BUY',
         'entry_price': 100.0,
-        'size': 1.0,
+        'size': 1.0,  # Esto se mapea a position_size internamente
         'stop_loss': 92.0,
         'take_profit': 114.0,
         'margin_est': 500.0,
@@ -207,7 +201,7 @@ try:
             print(f"      Confianza: {signal['confidence']:.0%}")
             print(f"      Ejecutada: {'✅ Sí' if signal['executed'] else '❌ No'}")
         
-        # Verificar trade (usando position_size)
+        # ✅ CORREGIDO: Usar position_size en lugar de size
         cursor.execute("""
             SELECT trade_id, epic, direction, entry_price, position_size,
                    stop_loss, take_profit, margin_used, status, deal_reference
@@ -251,7 +245,7 @@ try:
         'pnl_percent': 7.0
     }
     
-    db_manager.save_trade_close('TEST_DEAL_789', exit_data)
+    db_manager.save_trade_close('TEST_DEAL_456', exit_data)
     print("   ✅ Trade cerrado correctamente")
     
     # Verificar cierre
@@ -259,7 +253,7 @@ try:
         cursor.execute("""
             SELECT status, exit_price, exit_reason, pnl, pnl_percent
             FROM trades 
-            WHERE deal_reference = 'TEST_DEAL_789'
+            WHERE deal_reference = 'TEST_DEAL_456'
         """)
         closed_trade = cursor.fetchone()
         
@@ -325,9 +319,5 @@ print("📊 Datos de prueba guardados:")
 print(f"   Session ID: {session_id}")
 print(f"   Signal ID: {signal_id}")
 print(f"   Trade ID: {trade_id}")
-print()
-print("🧹 Para limpiar los datos de prueba:")
-print(f"   docker exec -it trading_bot_postgres psql -U trader -d trading_bot \\")
-print(f"   -c \"DELETE FROM trading_sessions WHERE session_id = {session_id};\"")
 print()
 print("="*70)

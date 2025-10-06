@@ -1,5 +1,5 @@
 """
-Bot de trading principal - Orquestador (Con persistencia en BD)
+Bot de trading principal - Orquestador (Con persistencia en BD y logs estructurados)
 """
 
 import time
@@ -14,29 +14,31 @@ from strategies.intraday_strategy import IntradayStrategy
 from trading.position_manager import PositionManager
 from utils.helpers import safe_float
 from utils.bot_controller import BotController
-from database.database_manager import DatabaseManager  # ← NUEVO
+from utils.logger_manager import SessionLogger
+from database.database_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 
 class TradingBot:
-    """Bot de trading intraday - Orquestador principal con persistencia"""
+    """Bot de trading intraday - Orquestador principal con persistencia y logs"""
     
     def __init__(self):
         self.api = CapitalClient()
         self.strategy = IntradayStrategy()
         self.position_manager = PositionManager(self.api)
         self.controller = BotController()
-        self.db_manager = DatabaseManager()  # ← NUEVO
+        self.db_manager = DatabaseManager()
+        self.session_logger = None
         self.account_info = {}
         self.is_running = False
-        self.signal_ids = {}  # Para vincular señales con trades
+        self.signal_ids = {}
     
     def run(self):
         """Inicia el bot de trading"""
         logger.info("="*60)
-        logger.info("BOT INTRADAY TRADING - Modo Modular v6.2")
-        logger.info("Con control manual y persistencia en BD")
+        logger.info("BOT INTRADAY TRADING - Modo Modular v6.3")
+        logger.info("Con control manual, persistencia en BD y logs estructurados")
         logger.info("="*60)
         
         self.is_running = True
@@ -51,14 +53,19 @@ class TradingBot:
         balance, available = self.position_manager.get_account_balance(self.account_info)
         self._log_account_status()
         
-        # ✅ NUEVO: Iniciar sesión en BD
+        # Iniciar sesión en BD y sistema de logs
         try:
             config_snapshot = self._get_config_snapshot()
             session_id = self.db_manager.start_session(balance, config_snapshot)
             logger.info(f"📊 Sesión de BD iniciada - ID: {session_id}")
+            
+            # Iniciar logger de sesión
+            self.session_logger = SessionLogger(session_id)
+            
         except Exception as e:
             logger.error(f"❌ Error iniciando sesión de BD: {e}")
             logger.warning("⚠️  El bot continuará pero sin guardar datos")
+            self.session_logger = SessionLogger()
         
         # Loop principal
         while self.is_running:
@@ -77,7 +84,7 @@ class TradingBot:
                 # Actualizar info de cuenta
                 self.account_info = self.api.get_account_info()
                 
-                # ✅ NUEVO: Guardar snapshot de cuenta
+                # Guardar snapshot de cuenta
                 self._save_account_snapshot()
                 
                 # Escanear y operar
@@ -92,6 +99,14 @@ class TradingBot:
                 break
             except Exception as e:
                 logger.error(f"❌ Error en loop principal: {e}")
+                
+                # Log del error
+                if self.session_logger:
+                    self.session_logger.log_error(
+                        f"Error en loop principal: {e}",
+                        exception=e
+                    )
+                
                 time.sleep(300)
     
     def scan_and_trade(self):
@@ -116,6 +131,15 @@ class TradingBot:
         
         if not all_analyses:
             logger.info("ℹ️  No hay señales de trading en ningún activo")
+            
+            # Log resumen vacío
+            if self.session_logger:
+                self.session_logger.log_scan_summary({
+                    'total_assets': len(Config.ASSETS),
+                    'signals_found': 0,
+                    'trades_executed': 0
+                })
+            
             return
         
         # Filtrar por confianza mínima
@@ -123,6 +147,15 @@ class TradingBot:
         
         if not valid_analyses:
             logger.info(f"ℹ️  Ninguna señal supera la confianza mínima ({Config.MIN_CONFIDENCE:.0%})")
+            
+            # Log resumen
+            if self.session_logger:
+                self.session_logger.log_scan_summary({
+                    'total_assets': len(Config.ASSETS),
+                    'signals_found': len(all_analyses),
+                    'trades_executed': 0
+                })
+            
             return
         
         # Limitar al número máximo de posiciones
@@ -186,18 +219,34 @@ class TradingBot:
         
         if not plans:
             logger.info("\nℹ️  No hay operaciones viables tras aplicar límites")
+            
+            # Log resumen
+            if self.session_logger:
+                self.session_logger.log_scan_summary({
+                    'total_assets': len(Config.ASSETS),
+                    'signals_found': len(valid_analyses),
+                    'trades_executed': 0,
+                    'margin_used': margin_used
+                })
+            
             return
         
         # PASO 5: Ejecutar operaciones
-        self._execute_trades(plans, margin_used, total_limit)
+        executed = self._execute_trades(plans, margin_used, total_limit)
+        
+        # Log resumen final
+        if self.session_logger:
+            self.session_logger.log_scan_summary({
+                'total_assets': len(Config.ASSETS),
+                'signals_found': len(valid_analyses),
+                'trades_executed': executed,
+                'margin_used': margin_used + sum(p['margin_est'] for p in plans[:executed])
+            })
     
     def _analyze_markets(self) -> List[Dict]:
         """Analiza TODOS los mercados y guarda señales en BD"""
         analyses = []
         
-        # ============================================
-        # HEADER CON FORMATO CLARO
-        # ============================================
         logger.info("\n" + "="*80)
         logger.info("📊 ANÁLISIS DE MERCADOS")
         logger.info("="*80)
@@ -206,23 +255,19 @@ class TradingBot:
         logger.info(f"Confianza mínima: {Config.MIN_CONFIDENCE:.0%}")
         logger.info("-"*80)
         
-        # Tabla de resultados
         logger.info(f"{'#':<3} {'Asset':<10} {'Status':<15} {'Signal':<10} {'Conf':<8} {'ATR':<8} {'Reason'}")
         logger.info("-"*80)
         
         for i, epic in enumerate(Config.ASSETS, 1):
             try:
-                # Obtener datos de mercado
                 market_data = self.api.get_market_data(epic, Config.TIMEFRAME)
                 
                 if not market_data or 'prices' not in market_data or not market_data['prices']:
                     logger.info(f"{i:<3} {epic:<10} {'❌ Sin datos':<15}")
                     continue
                 
-                # Convertir a DataFrame
                 df = pd.DataFrame(market_data['prices'])
                 
-                # Convertir precios
                 for col in ['closePrice', 'openPrice', 'highPrice', 'lowPrice']:
                     if col in df.columns:
                         df[col] = df[col].apply(lambda x: safe_float(x))
@@ -234,10 +279,9 @@ class TradingBot:
                     logger.info(f"{i:<3} {epic:<10} {'❌ Datos vacíos':<15}")
                     continue
                 
-                # Analizar con la estrategia
                 analysis = self.strategy.analyze(df, epic)
                 
-                # ✅ NUEVO: Guardar TODAS las señales en BD (incluso NEUTRAL)
+                # Guardar señal en BD
                 try:
                     signal_id = self.db_manager.save_signal(analysis)
                     if signal_id and analysis['signal'] in ['BUY', 'SELL']:
@@ -245,14 +289,10 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"Error guardando señal de {epic}: {e}")
                 
-                # ============================================
-                # LOG FORMATEADO DEL RESULTADO
-                # ============================================
                 atr_str = f"{analysis.get('atr_percent', 0):.2f}%" if analysis.get('atr_percent') else "N/A"
                 
                 if analysis['signal'] == 'NEUTRAL':
                     reason = analysis['reasons'][0] if analysis['reasons'] else 'Sin señal'
-                    # Truncar razón si es muy larga
                     reason = reason[:40] + "..." if len(reason) > 40 else reason
                     logger.info(
                         f"{i:<3} {epic:<10} {'⚪ Neutral':<15} {'':<10} {'':<8} "
@@ -262,7 +302,6 @@ class TradingBot:
                     # Señal válida (BUY o SELL)
                     conf_str = f"{analysis['confidence']:.0%}"
                     rsi = analysis['indicators'].get('rsi', 0)
-                    reason_preview = analysis['reasons'][0][:30] if analysis['reasons'] else ''
                     
                     signal_emoji = "🟢" if analysis['signal'] == 'BUY' else "🔴"
                     logger.info(
@@ -271,9 +310,12 @@ class TradingBot:
                         f"RSI:{rsi:.0f}"
                     )
                     
-                    # Log detallado de razones (indentado)
-                    for reason in analysis['reasons'][:3]:  # Máximo 3 razones
+                    for reason in analysis['reasons'][:3]:
                         logger.info(f"    └─ {reason}")
+                    
+                    # Log en archivo de señales
+                    if self.session_logger:
+                        self.session_logger.log_signal(analysis)
                     
                     analyses.append(analysis)
                 
@@ -281,11 +323,15 @@ class TradingBot:
                 
             except Exception as e:
                 logger.error(f"{i:<3} {epic:<10} {'❌ Error':<15} {str(e)[:40]}")
+                
+                if self.session_logger:
+                    self.session_logger.log_error(
+                        f"Error analizando {epic}: {e}",
+                        exception=e
+                    )
+                
                 continue
         
-        # ============================================
-        # FOOTER CON RESUMEN
-        # ============================================
         logger.info("-"*80)
         logger.info(f"✅ Análisis completado")
         logger.info(f"   Total activos: {len(Config.ASSETS)}")
@@ -409,11 +455,11 @@ class TradingBot:
         
         return plans
     
-    def _execute_trades(self, plans: List[Dict], margin_used: float, total_limit: float):
+    def _execute_trades(self, plans: List[Dict], margin_used: float, total_limit: float) -> int:
         """Ejecuta las operaciones planificadas y las guarda en BD"""
         if not plans:
             logger.info("ℹ️  No hay planes de operaciones para ejecutar")
-            return
+            return 0
         
         plans.sort(key=lambda x: x['confidence'], reverse=True)
         
@@ -478,7 +524,7 @@ class TradingBot:
                 deal_ref = result.get('dealReference', 'n/a')
                 logger.info(f"   ✅ EJECUTADA - Deal ID: {deal_ref}")
                 
-                # ✅ NUEVO: Guardar trade en BD
+                # Guardar trade en BD
                 try:
                     trade_data = {
                         'signal_id': self.signal_ids.get(plan['epic']),
@@ -499,13 +545,16 @@ class TradingBot:
                     trade_id = self.db_manager.save_trade_open(trade_data)
                     
                     if trade_id and self.signal_ids.get(plan['epic']):
-                        # Marcar señal como ejecutada
                         self.db_manager.mark_signal_executed(
                             self.signal_ids[plan['epic']], 
                             trade_id
                         )
                     
                     logger.info(f"   💾 Trade guardado en BD - ID: {trade_id}")
+                    
+                    # Log en archivo de trades
+                    if self.session_logger:
+                        self.session_logger.log_trade_open(trade_data)
                 
                 except Exception as e:
                     logger.error(f"   ⚠️  Error guardando trade en BD: {e}")
@@ -528,6 +577,8 @@ class TradingBot:
         logger.info(f"🎯 Margen disponible restante: €{total_limit - current_margin:.2f}")
         logger.info(f"📊 Utilización: {(current_margin/total_limit)*100:.1f}%")
         logger.info("="*60 + "\n")
+        
+        return executed
     
     def is_trading_hours(self) -> bool:
         """Verifica si estamos en horario de trading"""
@@ -570,6 +621,14 @@ class TradingBot:
                 'available': available,
                 'open_positions': open_positions
             })
+            
+            # Log en archivo también
+            if self.session_logger:
+                self.session_logger.log_account_snapshot({
+                    'balance': balance,
+                    'available': available,
+                    'open_positions': open_positions
+                })
         except Exception as e:
             logger.debug(f"Error guardando snapshot: {e}")
     
@@ -579,7 +638,7 @@ class TradingBot:
         self.is_running = False
         self.controller.stop_bot()
         
-        # ✅ NUEVO: Finalizar sesión en BD
+        # Finalizar sesión en BD
         try:
             if self.db_manager.has_active_session():
                 balance, _ = self.position_manager.get_account_balance(self.account_info)
@@ -587,6 +646,10 @@ class TradingBot:
                 logger.info("📊 Sesión de BD finalizada")
         except Exception as e:
             logger.error(f"Error finalizando sesión BD: {e}")
+        
+        # Cerrar logger de sesión
+        if self.session_logger:
+            self.session_logger.close()
         
         self.api.close_session()
         logger.info("✅ Bot detenido correctamente")

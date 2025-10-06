@@ -11,15 +11,9 @@
         <!-- Header -->
         <header class="header">
             <h1>🤖 Trading Bot Dashboard</h1>
-            <div class="header-controls">
-                <div class="status-indicator">
-                    <span id="status-dot" class="dot"></span>
-                    <span id="status-text">Conectando...</span>
-                </div>
-                <div class="bot-controls">
-                    <button id="start-btn" class="btn btn-success" onclick="startBot()">▶️ Iniciar</button>
-                    <button id="stop-btn" class="btn btn-danger" onclick="stopBot()">⏸️ Pausar</button>
-                </div>
+            <div class="status-indicator">
+                <span id="status-dot" class="dot"></span>
+                <span id="status-text">Conectando...</span>
             </div>
         </header>
 
@@ -48,12 +42,98 @@
 
         <!-- Positions -->
         <section class="card">
-            <div class="card-header-with-actions">
-                <h2>📊 Posiciones Abiertas (<span id="positions-count">0</span>)</h2>
-                <button class="btn btn-secondary" onclick="exportTrades()">📥 Export Trades</button>
-            </div>
+            <h2>📊 Posiciones Abiertas (<span id="positions-count">0</span>)</h2>
             <div id="positions-container">
                 <p class="loading">Cargando posiciones...</p>
+            </div>
+        </section>
+
+        <!-- NEW: Trading History -->
+        <section class="card">
+            <div class="card-header">
+                <h2>📈 Historial de Trades</h2>
+                <div class="button-group">
+                    <button class="btn btn-primary" onclick="exportTradesCSV()">
+                        📄 Exportar CSV
+                    </button>
+                    <button class="btn btn-primary" onclick="exportTradesExcel()">
+                        📊 Exportar Excel
+                    </button>
+                    <button class="btn btn-success" onclick="generateReport()">
+                        📑 Reporte Completo
+                    </button>
+                </div>
+            </div>
+            
+            <div class="filters">
+                <label>
+                    Sesión:
+                    <select id="session-filter" onchange="loadTrades()">
+                        <option value="">Todas las sesiones</option>
+                    </select>
+                </label>
+                <label>
+                    Límite:
+                    <select id="limit-filter" onchange="loadTrades()">
+                        <option value="20">20</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="200">200</option>
+                    </select>
+                </label>
+                <button class="btn btn-secondary" onclick="loadTrades()">🔄 Actualizar</button>
+            </div>
+            
+            <div id="trades-container">
+                <p class="loading">Cargando trades...</p>
+            </div>
+        </section>
+
+        <!-- NEW: Trading Statistics -->
+        <section class="card">
+            <h2>📊 Estadísticas</h2>
+            <div id="stats-container">
+                <p class="loading">Cargando estadísticas...</p>
+            </div>
+        </section>
+
+        <!-- NEW: Backtesting -->
+        <section class="card">
+            <div class="card-header">
+                <h2>🔬 Backtesting</h2>
+            </div>
+            
+            <div class="backtest-form">
+                <div class="form-row">
+                    <label>
+                        Días históricos:
+                        <input type="number" id="backtest-days" value="30" min="1" max="365">
+                    </label>
+                    <label>
+                        Capital inicial:
+                        <input type="number" id="backtest-capital" value="10000" min="100" step="100">
+                    </label>
+                </div>
+                <button class="btn btn-warning" onclick="runBacktest()">
+                    ▶️ Ejecutar Backtest
+                </button>
+            </div>
+            
+            <div id="backtest-results" style="display: none;">
+                <h3>Resultados del Backtest</h3>
+                <div class="stats-grid" id="backtest-stats"></div>
+                <div id="backtest-trades-list"></div>
+            </div>
+        </section>
+
+        <!-- NEW: Recent Signals -->
+        <section class="card">
+            <div class="card-header">
+                <h2>🎯 Señales Recientes</h2>
+                <button class="btn btn-secondary" onclick="loadSignals()">🔄 Actualizar</button>
+            </div>
+            <div id="signals-container">
+                <p class="loading">Cargando señales...</p>
             </div>
         </section>
 
@@ -65,93 +145,6 @@
             </div>
         </section>
 
-        <section class="card">
-            <div class="card-header-with-actions">
-                <h2>💰 Gestión de Capital</h2>
-                <button class="btn btn-primary" onclick="toggleCapitalEdit()">
-                    ⚙️ Editar
-                </button>
-            </div>
-            
-            <!-- Vista de solo lectura -->
-            <div id="capital-view" class="config-grid">
-                <div class="config-item">
-                    <div class="config-label">Modo</div>
-                    <div class="config-value" id="capital-mode-view">PERCENTAGE</div>
-                </div>
-                <div class="config-item" id="percent-view-item">
-                    <div class="config-label">% Máximo del Balance</div>
-                    <div class="config-value" id="capital-percent-view">40%</div>
-                </div>
-                <div class="config-item" id="fixed-view-item" style="display: none;">
-                    <div class="config-label">Monto Fijo</div>
-                    <div class="config-value" id="capital-fixed-view">€400.00</div>
-                </div>
-                <div class="config-item">
-                    <div class="config-label">Distribución</div>
-                    <div class="config-value" id="distribution-mode-view">EQUAL</div>
-                </div>
-            </div>
-            
-            <!-- Editor (oculto por defecto) -->
-            <div id="capital-edit" style="display: none;">
-                <div class="config-edit-form">
-                    <div class="form-group">
-                        <label>Modo de Capital:</label>
-                        <select id="capital-mode-select" onchange="toggleCapitalModeInputs()">
-                            <option value="PERCENTAGE">Porcentaje del Balance</option>
-                            <option value="FIXED">Monto Fijo (EUR)</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group" id="percent-input-group">
-                        <label>% Máximo del Balance:</label>
-                        <input type="number" id="capital-percent-input" min="1" max="100" step="1" value="40">
-                        <small>Porcentaje del balance disponible para TODAS las operaciones</small>
-                    </div>
-                    
-                    <div class="form-group" id="fixed-input-group" style="display: none;">
-                        <label>Monto Fijo (EUR):</label>
-                        <input type="number" id="capital-fixed-input" min="10" step="10" value="400">
-                        <small>Monto fijo en EUR para TODAS las operaciones</small>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Modo de Distribución:</label>
-                        <select id="distribution-mode-select">
-                            <option value="EQUAL">Equitativa (dividir por igual)</option>
-                            <option value="WEIGHTED">Ponderada (por confianza)</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-actions">
-                        <button class="btn btn-success" onclick="saveCapitalConfig()">
-                            ✅ Guardar
-                        </button>
-                        <button class="btn btn-secondary" onclick="cancelCapitalEdit()">
-                            ❌ Cancelar
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Export Section -->
-        <section class="card">
-            <h2>📤 Exportar Datos</h2>
-            <div class="export-grid">
-                <button class="btn btn-primary" onclick="exportBacktest()">
-                    📊 Backtest Results
-                </button>
-                <button class="btn btn-primary" onclick="exportTrades()">
-                    💼 Trading History
-                </button>
-                <button class="btn btn-primary" onclick="exportLogs()">
-                    📝 Bot Logs
-                </button>
-            </div>
-        </section>
-
         <!-- Footer -->
         <footer>
             <p>Última actualización: <span id="last-update">--:--:--</span></p>
@@ -159,8 +152,11 @@
         </footer>
     </div>
 
-    <!-- Notification Toast -->
-    <div id="toast" class="toast"></div>
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" style="display: none;">
+        <div class="spinner"></div>
+        <p>Procesando...</p>
+    </div>
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
