@@ -11,6 +11,7 @@ import pandas as pd
 import os
 from io import BytesIO
 
+from utils.bot_controller import BotController
 from api.capital_client import CapitalClient
 from config import Config
 from utils.helpers import safe_float
@@ -108,7 +109,8 @@ def get_positions():
         position_data = pos.get('position', {})
         
         formatted_positions.append({
-            'epic': position_data.get('epic', 'Unknown'),
+            'epic': pos.get('market', {}).get('epic', 'Unknown'),
+            'instrument_name': pos.get('market', {}).get('instrumentName', 'Unknown'),  # ← NUEVO
             'direction': position_data.get('direction', 'Unknown'),
             'size': safe_float(position_data.get('size', 0)),
             'level': safe_float(position_data.get('level', 0)),
@@ -144,19 +146,91 @@ def get_config():
 
 @app.route('/api/status')
 def get_status():
-    """Endpoint para verificar estado del bot"""
-    now = datetime.now()
-    is_trading_hours = (
-        now.weekday() < 5 and
-        Config.START_HOUR <= now.hour < Config.END_HOUR
-    )
-    
-    return jsonify({
-        'status': 'running',
-        'is_trading_hours': is_trading_hours,
-        'current_time': now.isoformat(),
-        'next_scan': 'In progress' if is_trading_hours else 'Waiting for trading hours'
-    })
+    """Endpoint para verificar estado del bot (VERSIÓN MEJORADA)"""
+    try:
+        now = datetime.now()
+        is_trading_hours = (
+            now.weekday() < 5 and
+            Config.START_HOUR <= now.hour < Config.END_HOUR
+        )
+        
+        # Obtener estado del bot controller
+        controller = get_bot_controller()
+        bot_state = controller.get_status()
+        
+        return jsonify({
+            'status': 'running' if bot_state.get('running', False) else 'paused',
+            'running': bot_state.get('running', False),
+            'is_trading_hours': is_trading_hours,
+            'manual_override': bot_state.get('manual_override', False),
+            'last_command': bot_state.get('last_command'),
+            'current_time': now.isoformat(),
+            'next_scan': 'In progress' if (is_trading_hours and bot_state.get('running')) else 'Paused' if not bot_state.get('running') else 'Waiting for trading hours'
+        })
+    except Exception as e:
+        logger.error(f"Error obteniendo estado: {e}")
+        return jsonify({
+            'status': 'error',
+            'running': False,
+            'error': str(e)
+        }), 500
+
+
+# Instancia global del controlador
+bot_controller = None
+
+def get_bot_controller():
+    """Obtiene o crea el controlador del bot"""
+    global bot_controller
+    if bot_controller is None:
+        bot_controller = BotController()
+    return bot_controller
+
+
+@app.route('/api/bot/start', methods=['POST'])
+def start_bot():
+    """Inicia el bot manualmente"""
+    try:
+        controller = get_bot_controller()
+        controller.start_bot()
+        
+        logger.info("Bot iniciado desde dashboard")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Bot iniciado correctamente',
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Error iniciando bot: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/bot/stop', methods=['POST'])
+def stop_bot():
+    """Pausa el bot manualmente"""
+    try:
+        controller = get_bot_controller()
+        controller.stop_bot()
+        
+        logger.info("Bot pausado desde dashboard")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Bot pausado correctamente',
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Error pausando bot: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 
 
 # ============================================
