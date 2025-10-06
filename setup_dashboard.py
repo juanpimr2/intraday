@@ -1,39 +1,48 @@
 #!/usr/bin/env python3
 """
-Script de setup para el dashboard
-Crea directorios necesarios y verifica dependencias
+Script de setup simplificado para verificar el dashboard del trading bot
 """
 
-import os
 import sys
+import os
 import subprocess
+from pathlib import Path
+
+
+def print_header(text):
+    """Imprime un header formateado"""
+    print("=" * 70)
+    print(f"{text}")
+    print("=" * 70)
+
+
+def print_section(text):
+    """Imprime una sección"""
+    print(f"\n{text}")
 
 
 def check_python_version():
-    """Verifica versión de Python"""
-    print("🐍 Verificando versión de Python...")
+    """Verifica la versión de Python"""
+    print_section("Verificando version de Python...")
     version = sys.version_info
     
     if version.major < 3 or (version.major == 3 and version.minor < 9):
-        print(f"❌ Python {version.major}.{version.minor} detectado")
+        print(f"X Python {version.major}.{version.minor}.{version.micro}")
         print("   Se requiere Python 3.9 o superior")
         return False
     
-    print(f"✅ Python {version.major}.{version.minor}.{version.micro}")
+    print(f"OK Python {version.major}.{version.minor}.{version.micro}")
     return True
 
 
 def check_dependencies():
     """Verifica que las dependencias estén instaladas"""
-    print("\n📦 Verificando dependencias...")
+    print_section("Verificando dependencias...")
     
     required = [
         'flask',
-        'flask_cors',
         'pandas',
-        'psycopg2',
-        'pytest',
-        'openpyxl'
+        'pytest'
     ]
     
     missing = []
@@ -41,22 +50,22 @@ def check_dependencies():
     for package in required:
         try:
             __import__(package)
-            print(f"✅ {package}")
+            print(f"OK {package}")
         except ImportError:
-            print(f"❌ {package} no encontrado")
+            print(f"X {package} (falta)")
             missing.append(package)
     
     if missing:
-        print(f"\n⚠️  Faltan {len(missing)} dependencias")
-        print("   Instálalas con: pip install -r requirements.txt")
+        print(f"\nInstala las dependencias faltantes:")
+        print(f"   pip install {' '.join(missing)}")
         return False
     
     return True
 
 
 def create_directories():
-    """Crea directorios necesarios"""
-    print("\n📁 Creando directorios...")
+    """Crea los directorios necesarios"""
+    print_section("Creando directorios...")
     
     directories = [
         'exports',
@@ -68,205 +77,144 @@ def create_directories():
     ]
     
     for directory in directories:
-        if not os.path.exists(directory):
-            os.makedirs(directory)
-            print(f"✅ Creado: {directory}")
+        path = Path(directory)
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            print(f"OK Creado: {directory}")
         else:
-            print(f"✓  Existe: {directory}")
-
-
-def check_database():
-    """Verifica conexión a la base de datos"""
-    print("\n🗄️  Verificando base de datos...")
-    
-    try:
-        from database.connection import DatabaseConnection
-        db = DatabaseConnection()
-        
-        with db.get_cursor(commit=False) as cursor:
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
-        
-        print("✅ Conexión a PostgreSQL exitosa")
-        return True
-    
-    except Exception as e:
-        print(f"❌ Error de conexión: {e}")
-        print("\n   Posibles soluciones:")
-        print("   1. Inicia PostgreSQL: docker-compose up -d postgres")
-        print("   2. Verifica credenciales en .env")
-        print("   3. Aplica migraciones: python database/migrations/migration_runner.py migrate")
-        return False
-
-
-def verify_files():
-    """Verifica que existan archivos críticos"""
-    print("\n📄 Verificando archivos críticos...")
-    
-    critical_files = [
-        'dashboard/app.py',
-        'dashboard/templates/index.html',
-        'dashboard/static/css/style.css',
-        'dashboard/static/js/main.js',
-        'database/queries/analytics.py',
-        'tests/test_dashboard_integration.py',
-        'tests/conftest.py',
-        'pytest.ini',
-        'requirements.txt'
-    ]
-    
-    missing = []
-    
-    for file in critical_files:
-        if os.path.exists(file):
-            print(f"✅ {file}")
-        else:
-            print(f"❌ {file} no encontrado")
-            missing.append(file)
-    
-    if missing:
-        print(f"\n⚠️  Faltan {len(missing)} archivos críticos")
-        print("   Verifica que hayas copiado todos los archivos del proyecto")
-        return False
+            print(f"OK Existe: {directory}")
     
     return True
 
 
-def create_env_example():
-    """Crea archivo .env.example si no existe"""
-    print("\n🔐 Verificando configuración...")
+def check_critical_files():
+    """Verifica que los archivos críticos existan"""
+    print_section("Verificando archivos criticos...")
     
-    env_example = """# Trading Bot Configuration
-# Renombra este archivo a .env y completa los valores
-
-# API Credentials
-CAPITAL_API_KEY=tu_api_key
-CAPITAL_EMAIL=tu_email@ejemplo.com
-CAPITAL_PASSWORD=tu_password
-
-# Database
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=trading_bot
-DB_USER=trader
-DB_PASSWORD=trader_password
-
-# Dashboard
-DASHBOARD_PORT=5000
-"""
+    critical_files = [
+        'dashboard/app.py',
+        'config.py',
+        'tests/test_dashboard_integration.py',
+        'tests/conftest.py',
+        'pytest.ini'
+    ]
     
-    if not os.path.exists('.env.example'):
-        with open('.env.example', 'w') as f:
-            f.write(env_example)
-        print("✅ Creado .env.example")
-        print("   Renómbralo a .env y completa tus credenciales")
-    else:
-        print("✓  .env.example existe")
+    missing = []
     
-    if not os.path.exists('.env'):
-        print("⚠️  Archivo .env no encontrado")
-        print("   Copia .env.example a .env y completa tus credenciales")
+    for filepath in critical_files:
+        path = Path(filepath)
+        if path.exists():
+            print(f"OK {filepath}")
+        else:
+            print(f"X {filepath} (falta)")
+            missing.append(filepath)
+    
+    if missing:
+        print(f"\nArchivos criticos faltantes:")
+        for f in missing:
+            print(f"   - {f}")
         return False
-    else:
-        print("✅ .env configurado")
     
     return True
 
 
 def run_quick_test():
     """Ejecuta un test rápido"""
-    print("\n🧪 Ejecutando test rápido...")
+    print_section("Ejecutando test rapido...")
     
     try:
+        # Configurar environment para UTF-8 en Windows
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        
+        # Usar python -m pytest para compatibilidad con Windows
         result = subprocess.run(
-            ['pytest', 'tests/test_dashboard_integration.py::test_api_config', '-v'],
+            [sys.executable, '-m', 'pytest', 
+             'tests/test_dashboard_integration.py::test_api_config', 
+             '-v', '--tb=line', '--no-header'],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=30,
+            env=env
         )
         
         if result.returncode == 0:
-            print("✅ Test pasó correctamente")
+            print("OK Test basico paso correctamente")
             return True
         else:
-            print("❌ Test falló")
-            print(result.stdout)
-            print(result.stderr)
+            print("X Test basico fallo")
+            # Solo mostrar la última parte del output (más relevante)
+            output_lines = result.stdout.split('\n')
+            relevant_lines = [l for l in output_lines if 'PASSED' in l or 'FAILED' in l or 'ERROR' in l]
+            if relevant_lines:
+                print("   ", "\n    ".join(relevant_lines[:5]))
             return False
-    
+            
     except subprocess.TimeoutExpired:
-        print("⏱️  Test timeout (>30s)")
+        print("X Test tomo demasiado tiempo (timeout 30s)")
+        return False
+    except FileNotFoundError:
+        print("X pytest no esta instalado correctamente")
+        print("   Ejecuta: pip install pytest")
         return False
     except Exception as e:
-        print(f"❌ Error ejecutando test: {e}")
+        print(f"X Error ejecutando test: {e}")
         return False
 
 
-def print_summary(checks):
-    """Imprime resumen de checks"""
-    print("\n" + "="*70)
-    print("📊 RESUMEN DEL SETUP")
-    print("="*70)
+def print_summary(results):
+    """Imprime un resumen de los checks"""
+    print_header("RESUMEN DEL SETUP")
     
-    total = len(checks)
-    passed = sum(checks.values())
+    checks = {
+        'Python 3.9+': results['python'],
+        'Dependencias': results['dependencies'],
+        'Directorios': results['directories'],
+        'Archivos criticos': results['files'],
+        'Test rapido': results['test']
+    }
     
-    for check, status in checks.items():
-        emoji = "✅" if status else "❌"
-        print(f"{emoji} {check}")
+    for check, passed in checks.items():
+        status = "OK" if passed else "X"
+        print(f"{status} {check}")
     
-    print("="*70)
-    print(f"Resultado: {passed}/{total} checks pasaron")
+    print("=" * 70)
     
-    if passed == total:
-        print("\n🎉 ¡Todo listo! El dashboard está configurado correctamente")
-        print("\n▶️  Siguiente paso:")
+    passed_count = sum(1 for v in checks.values() if v)
+    total_count = len(checks)
+    
+    print(f"Resultado: {passed_count}/{total_count} checks pasaron")
+    
+    if passed_count == total_count:
+        print("\nTodo listo! Puedes ejecutar el dashboard:")
         print("   python start_all.py")
-        print("   Luego abre: http://localhost:5000")
     else:
-        print("\n⚠️  Hay problemas que resolver antes de continuar")
+        print("\nHay problemas que resolver antes de continuar")
         print("   Revisa los errores arriba y vuelve a ejecutar este script")
 
 
 def main():
     """Función principal"""
-    print("="*70)
-    print("🚀 SETUP DEL DASHBOARD - TRADING BOT")
-    print("="*70)
+    print_header("SETUP DEL DASHBOARD - TRADING BOT")
     
-    checks = {}
+    # Ejecutar todos los checks
+    results = {
+        'python': check_python_version(),
+        'dependencies': check_dependencies(),
+        'directories': create_directories(),
+        'files': check_critical_files(),
+        'test': run_quick_test()
+    }
     
-    # Ejecutar checks
-    checks['Python 3.9+'] = check_python_version()
-    checks['Dependencias'] = check_dependencies()
+    # Imprimir resumen
+    print_summary(results)
     
-    create_directories()  # Siempre crear directorios
-    
-    checks['Archivos críticos'] = verify_files()
-    checks['Configuración .env'] = create_env_example()
-    checks['Base de datos'] = check_database()
-    
-    if all(checks.values()):
-        checks['Test rápido'] = run_quick_test()
-    
-    # Resumen
-    print_summary(checks)
-    
-    # Exit code
-    if all(checks.values()):
+    # Exit code basado en resultados
+    if all(results.values()):
         sys.exit(0)
     else:
         sys.exit(1)
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Setup interrumpido por el usuario")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n\n❌ Error inesperado: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    main()

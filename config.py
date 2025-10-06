@@ -16,9 +16,13 @@ class Config:
     BASE_URL = "https://demo-api-capital.backend-capital.com"
     
     # ============================================
-    # GESTIÓN DE CAPITAL - NUEVA CONFIGURACIÓN
+    # GESTIÓN DE CAPITAL - CONFIGURACIÓN COMPLETA
     # ============================================
-
+    
+    # CONFIGURACIÓN ANTERIOR (para compatibilidad con dashboard)
+    TARGET_PERCENT_OF_AVAILABLE = 0.40  # 40% del margen DISPONIBLE para todas las operaciones
+    
+    # NUEVA CONFIGURACIÓN
     # Modo de capital máximo: 'PERCENTAGE' o 'FIXED'
     CAPITAL_MODE = 'PERCENTAGE'  # Cambiar a 'FIXED' para usar monto fijo
 
@@ -36,7 +40,7 @@ class Config:
     # Margen de seguridad al calcular tamaños (para evitar exceder límites)
     SIZE_SAFETY_MARGIN = 0.85  # Usar solo 85% del tamaño calculado
 
-    # Límites antiguos (mantener para compatibilidad)
+    # Límites generales
     MAX_CAPITAL_RISK = 0.70              # % del balance como margen total máximo (límite seguridad)
     MAX_MARGIN_PER_ASSET = 0.35          # % del balance máximo por mismo instrumento
     MAX_POSITIONS = 3                     # Número máximo de posiciones simultáneas
@@ -48,7 +52,7 @@ class Config:
     # MODO: 'STATIC' o 'DYNAMIC'
     # STATIC = usa porcentajes fijos
     # DYNAMIC = usa ATR para calcular SL/TP adaptativos
-    SL_TP_MODE = 'DYNAMIC'
+    SL_TP_MODE = 'STATIC'  # Cambiado a STATIC por defecto para estabilidad
     
     # Operaciones BUY (Compra) - MODO STATIC
     TAKE_PROFIT_PERCENT_BUY = 0.14   # 14% ganancia
@@ -73,7 +77,7 @@ class Config:
     # ============================================
     # MÚLTIPLES TIMEFRAMES (MTF)
     # ============================================
-    ENABLE_MTF = True               # Activar/desactivar análisis multi-timeframe
+    ENABLE_MTF = False              # Desactivado por defecto para simplicidad
     TIMEFRAME_FAST = "HOUR"         # Timeframe para señales de entrada
     TIMEFRAME_SLOW = "HOUR_4"       # Timeframe para confirmar tendencia (HOUR_4, DAY)
     TIMEFRAME = TIMEFRAME_FAST      # Para compatibilidad con código existente
@@ -90,7 +94,7 @@ class Config:
     # ============================================
     # FILTROS DE TENDENCIA (ADX)
     # ============================================
-    ENABLE_ADX_FILTER = True        # Activar/desactivar filtro ADX
+    ENABLE_ADX_FILTER = False       # Desactivado por defecto para simplicidad
     MIN_ADX_TREND = 20.0            # ADX mínimo para considerar tendencia
     STRONG_ADX_THRESHOLD = 40.0     # ADX fuerte (boost de confianza)
     ADX_PERIOD = 14                 # Período del ADX
