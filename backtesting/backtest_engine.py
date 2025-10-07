@@ -1,19 +1,17 @@
+# backtesting/backtest_engine.py
 """
-backtesting/backtest_engine.py
-
 Motor de Backtesting UNIFICADO con:
 - Asignación de capital diaria priorizada por confianza (utils.CapitalTracker).
 - Costes reales (comisiones + spread) vía utils.apply_costs.
 - Timestamps de barra reales en UTC para entradas/salidas y equity.
 - Detección de régimen de mercado (trending/lateral) por activo (utils.detect_regime).
-- Métricas y análisis segmentados por régimen.
-- Export por defecto dentro de reports/run_<timestamp>/.
+- Métricas y análisis segmentados por régimen y por sesión (EU/US).
+- Export por defecto dentro de reports/run_<ts>/.
 
-Este archivo incluye un FIX importante:
-- Evitar pasar `tz='UTC'` a un Timestamp que ya viene con tzinfo.
-  Se usa `_to_utc()` para normalizar: tz_localize('UTC') si naive, o tz_convert('UTC') si tz-aware.
+FIX importante:
+- Evitar pasar `tz='UTC'` a un Timestamp que ya viene con tzinfo. Se usa `_to_utc()` para normalizar:
+  tz_localize('UTC') si naive, o tz_convert('UTC') si tz-aware.
 """
-
 from __future__ import annotations
 
 import logging
@@ -35,7 +33,6 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------------------
 # Utilidades internas de tiempo
 # --------------------------------------------------------------------------------------
-
 def _to_utc(ts: Union[pd.Timestamp, datetime]) -> pd.Timestamp:
     """Devuelve un pd.Timestamp en UTC (localiza si es naive, convierte si ya tiene tz)."""
     t = pd.Timestamp(ts)
@@ -47,7 +44,6 @@ def _to_utc(ts: Union[pd.Timestamp, datetime]) -> pd.Timestamp:
 # --------------------------------------------------------------------------------------
 # Estructuras de datos
 # --------------------------------------------------------------------------------------
-
 @dataclass
 class Trade:
     """Representa un trade completo."""
@@ -98,8 +94,8 @@ class BacktestResults:
     profit_factor: float = 0.0
 
     # Drawdown
-    max_drawdown: float = 0.0          # %
-    avg_drawdown: float = 0.0          # %
+    max_drawdown: float = 0.0  # %
+    avg_drawdown: float = 0.0  # %
     max_drawdown_duration_days: int = 0
     recovery_time_days: int = 0
 
@@ -108,7 +104,7 @@ class BacktestResults:
     sortino_ratio: float = 0.0
     calmar_ratio: float = 0.0
     mar_ratio: float = 0.0
-    volatility: float = 0.0            # % anualizada
+    volatility: float = 0.0  # % anualizada
 
     # Rachas
     max_consecutive_wins: int = 0
@@ -119,6 +115,7 @@ class BacktestResults:
     performance_by_hour: Dict[int, Dict] = field(default_factory=dict)
     performance_by_month: Dict[str, Dict] = field(default_factory=dict)
     performance_by_regime: Dict[str, Dict] = field(default_factory=dict)
+    performance_by_session: Dict[str, Dict] = field(default_factory=dict)  # NUEVO
 
     # Series
     equity_curve: List[Dict] = field(default_factory=list)
@@ -144,19 +141,20 @@ class BacktestResults:
             'equity_curve': self.equity_curve,
             'trades_detail': [t.__dict__ for t in self.trades],
             'performance_by_regime': self.performance_by_regime,
+            'performance_by_session': self.performance_by_session,  # NUEVO
         }
 
 
 # --------------------------------------------------------------------------------------
 # Motor unificado
 # --------------------------------------------------------------------------------------
-
 class BacktestEngine:
     """Motor de backtesting con CapitalTracker, costes, tiempos UTC y régimen."""
 
     def __init__(self, initial_capital: float = 10000.0):
         self.initial_capital = initial_capital
         self.capital = initial_capital
+
         self.strategy = IntradayStrategy()
         self.trades: List[Trade] = []
         self.equity_curve: List[Dict] = []
@@ -186,8 +184,11 @@ class BacktestEngine:
         self.sl_sell = float(getattr(Config, "STOP_LOSS_PERCENT_SELL", 0.01))
         self.tp_sell = float(getattr(Config, "TAKE_PROFIT_PERCENT_SELL", 0.02))
 
-    # -------------------------------- API pública --------------------------------
+        # Filtro de régimen (NUEVO)
+        self.regime_filter_enabled = bool(getattr(Config, "REGIME_FILTER_ENABLED", True))
+        self.regime_filter_block: str = str(getattr(Config, "REGIME_FILTER_BLOCK", "lateral")).lower()
 
+    # -------------------------------- API pública --------------------------------
     def run(
         self,
         historical_data: Dict[str, pd.DataFrame],
@@ -196,12 +197,14 @@ class BacktestEngine:
     ) -> BacktestResults:
         """Ejecuta el backtest bar-by-bar con fechas y horas reales (UTC)."""
         logger.info("=" * 80)
-        logger.info("🔬 BACKTESTING (motor unificado + capital tracker)")
+        logger.info(" BACKTESTING (motor unificado + capital tracker)")
         logger.info("=" * 80)
-        logger.info(f"💰 Capital inicial: €{self.initial_capital:,.2f}")
-        logger.info(f"⚖️  Asignación: USE_CAPITAL_TRACKER={self.use_capital_tracker} "
-                    f"(daily={self.capital_tracker.daily_budget_pct*100:.1f}%, "
-                    f"per_trade={self.capital_tracker.per_trade_cap_pct*100:.1f}%)")
+        logger.info(f" Capital inicial: €{self.initial_capital:,.2f}")
+        logger.info(
+            f"⚖️ Asignación: USE_CAPITAL_TRACKER={self.use_capital_tracker} "
+            f"(daily={self.capital_tracker.daily_budget_pct*100:.1f}%, "
+            f"per_trade={self.capital_tracker.per_trade_cap_pct*100:.1f}%)"
+        )
 
         # Report dir bajo reports/
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -223,6 +226,7 @@ class BacktestEngine:
 
         for epic, df in historical_data.items():
             df = df.copy()
+
             # Normalización columnas y tiempos
             if "snapshotTime" in df.columns:
                 df["snapshotTime"] = pd.to_datetime(df["snapshotTime"], utc=True, errors="coerce")
@@ -249,7 +253,11 @@ class BacktestEngine:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].apply(lambda x: safe_float(x)), errors="coerce")
 
-            df = df.dropna(subset=["snapshotTime", "closePrice"]).sort_values("snapshotTime").reset_index(drop=True)
+            df = (
+                df.dropna(subset=["snapshotTime", "closePrice"])
+                .sort_values("snapshotTime")
+                .reset_index(drop=True)
+            )
 
             # Día (para loops) y mapa de régimen por timestamp
             df["date"] = df["snapshotTime"].dt.date
@@ -268,8 +276,8 @@ class BacktestEngine:
             logger.error("❌ No hay fechas válidas en el rango dado")
             return self._create_empty_results()
 
-        logger.info(f"📅 Período: {all_dates[0]} → {all_dates[-1]}  |  Días: {len(all_dates)}")
-        logger.info(f"📈 Activos: {', '.join(self._historical_data.keys())}")
+        logger.info(f" Período: {all_dates[0]} → {all_dates[-1]} | Días: {len(all_dates)}")
+        logger.info(f" Activos: {', '.join(self._historical_data.keys())}")
         logger.info("-" * 80)
 
         open_positions: List[Dict] = []
@@ -281,7 +289,7 @@ class BacktestEngine:
             # 1) Actualizar posiciones con última barra del día (timestamp real UTC)
             open_positions = self._update_positions(open_positions, curr_date)
 
-            # 2) Señales (no look-ahead)
+            # 2) Señales (no look-ahead) [con filtro de régimen opcional]
             signals = self._get_signals_for_date(curr_date)
 
             # 3) Aperturas (tracker o legacy), usando el timestamp de la última barra del activo ese día
@@ -332,14 +340,14 @@ class BacktestEngine:
             })
 
         # Cierre final
-        logger.info(f"\n🔚 Cerrando {len(open_positions)} posiciones al finalizar...")
+        logger.info(f"\n Cerrando {len(open_positions)} posiciones al finalizar...")
         last_ref = self._reference_timestamp(all_dates[-1]) or _to_utc(pd.Timestamp(all_dates[-1]))
         for p in open_positions:
             self._close_position(p, p['current_price'], last_ref, 'END_OF_BACKTEST')
 
         # Costes reales (antes de métricas)
         if self.trades:
-            logger.info("💰 Aplicando costes reales (comisiones + spread)...")
+            logger.info(" Aplicando costes reales (comisiones + spread)...")
             df_trades = pd.DataFrame([t.__dict__ for t in self.trades])
             df_trades_net = apply_costs(
                 df_trades,
@@ -355,12 +363,11 @@ class BacktestEngine:
             self._last_costs_df = df_trades_net.copy()
 
         # Métricas
-        logger.info("\n📊 Calculando métricas...")
+        logger.info("\n Calculando métricas...")
         results = self._calculate_advanced_results()
         return results
 
     # -------------------------------- Internos --------------------------------
-
     def _extract_dates(self, data: Dict[str, pd.DataFrame], start_date: Optional[str], end_date: Optional[str]) -> List:
         dates = set()
         for df in data.values():
@@ -381,7 +388,7 @@ class BacktestEngine:
         day_data = df[df["snapshotTime"].dt.date == date_]
         if day_data.empty:
             return None
-        # FIX: no pasar tz si ya hay tzinfo; normalizar con _to_utc
+        # FIX: normalizar con _to_utc
         val = pd.Timestamp(day_data.iloc[-1]["snapshotTime"])
         return _to_utc(val)
 
@@ -394,13 +401,22 @@ class BacktestEngine:
         return None
 
     def _get_signals_for_date(self, date_) -> List[Dict]:
+        """Obtiene señales a cierre del día (no look-ahead), aplicando filtro de régimen si está activo."""
         signals: List[Dict] = []
         for epic, df in self._historical_data.items():
             subset = df[df["snapshotTime"].dt.date <= date_]
             if len(subset) < getattr(Config, "SMA_LONG", 50):
                 continue
-            analysis = self.strategy.analyze(subset.copy(), epic)
-            # Esperado: {'epic','signal','confidence','current_price',...}
+
+            # Filtro de régimen (usando la última barra del día para ese epic)
+            if self.regime_filter_enabled:
+                ts_day = self._last_bar_timestamp(epic, date_)
+                regime_here = self._lookup_regime(epic, ts_day) if ts_day is not None else "lateral"
+                if regime_here.lower() == self.regime_filter_block:
+                    logger.debug(f"⛔ Régimen '{regime_here}' en {epic} {date_} → se omite señal")
+                    continue
+
+            analysis = self.strategy.analyze(subset.copy(), epic)  # {'epic','signal','confidence','current_price',...}
             signals.append(analysis)
         return signals
 
@@ -409,12 +425,10 @@ class BacktestEngine:
         direction = signal['signal']
         position_size = float(override_position_size) if override_position_size is not None else \
             (self.capital * self.legacy_target_pct) / max(1, self.max_positions)
-
         if position_size <= 0 or position_size > self.capital:
             return None
 
         units = position_size / max(price, 1e-12)
-
         if direction == 'BUY':
             stop_loss = price * (1 - self.sl_buy)
             take_profit = price * (1 + self.tp_buy)
@@ -423,7 +437,6 @@ class BacktestEngine:
             take_profit = price * (1 - self.tp_sell)
 
         self.capital -= position_size
-
         return {
             'epic': signal['epic'],
             'direction': direction,
@@ -470,7 +483,9 @@ class BacktestEngine:
                 updated.append(position)
         return updated
 
-    def _lookup_regime(self, epic: str, ts: pd.Timestamp) -> str:
+    def _lookup_regime(self, epic: str, ts: Optional[pd.Timestamp]) -> str:
+        if ts is None:
+            return "lateral"
         m = self._regimes_map.get(epic, {})
         if ts in m:
             return m[ts]
@@ -519,12 +534,11 @@ class BacktestEngine:
         total = self.capital
         for p in open_positions:
             pnl = (p['current_price'] - p['entry_price']) * p['units'] if p['direction'] == 'BUY' \
-                  else (p['entry_price'] - p['current_price']) * p['units']
+                else (p['entry_price'] - p['current_price']) * p['units']
             total += p['position_size'] + pnl
         return float(total)
 
     # -------------------------------- Métricas --------------------------------
-
     def _calculate_advanced_results(self) -> BacktestResults:
         equity_df = pd.DataFrame(self.equity_curve)
         equity_df['date'] = pd.to_datetime(equity_df['date'], utc=True)
@@ -563,7 +577,6 @@ class BacktestEngine:
     def _drawdown_stats(self, equity_df: pd.DataFrame) -> Dict:
         if equity_df.empty:
             return {'max_drawdown': 0.0, 'avg_drawdown': 0.0, 'max_drawdown_duration_days': 0, 'recovery_time_days': 0}
-
         eq = equity_df['equity']
         running_max = eq.cummax()
         dd = (eq - running_max) / running_max * 100
@@ -591,21 +604,16 @@ class BacktestEngine:
     def _risk_metrics(self, daily_returns: List[float], cagr: float, max_dd: float) -> Dict:
         if not daily_returns or len(daily_returns) < 2:
             return dict(sharpe_ratio=0.0, sortino_ratio=0.0, calmar_ratio=0.0, mar_ratio=0.0, volatility=0.0)
-
         arr = np.array(daily_returns, dtype=float)
         vol = float(np.std(arr, ddof=1) * np.sqrt(252) * 100)
-
         mean = float(np.mean(arr))
         std = float(np.std(arr, ddof=1))
         sharpe = (mean / std) * np.sqrt(252) if std > 0 else 0.0
-
         downside = arr[arr < 0]
         dstd = float(np.std(downside, ddof=1)) if downside.size else std
         sortino = (mean / dstd) * np.sqrt(252) if dstd > 0 else 0.0
-
         calmar = (cagr / max_dd) if max_dd > 0 else 0.0
         mar = calmar
-
         return {
             'sharpe_ratio': sharpe,
             'sortino_ratio': sortino,
@@ -617,14 +625,21 @@ class BacktestEngine:
     def _trade_stats(self) -> Dict:
         if not self.trades:
             return {
-                'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0, 'win_rate': 0.0,
-                'avg_win': 0.0, 'avg_loss': 0.0, 'largest_win': 0.0, 'largest_loss': 0.0,
-                'profit_factor': 0.0, 'max_consecutive_wins': 0, 'max_consecutive_losses': 0
+                'total_trades': 0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'win_rate': 0.0,
+                'avg_win': 0.0,
+                'avg_loss': 0.0,
+                'largest_win': 0.0,
+                'largest_loss': 0.0,
+                'profit_factor': 0.0,
+                'max_consecutive_wins': 0,
+                'max_consecutive_losses': 0
             }
 
         winners = [t for t in self.trades if t.is_winner]
         losers = [t for t in self.trades if not t.is_winner]
-
         total_wins = sum(t.pnl for t in winners)
         total_losses = abs(sum(t.pnl for t in losers))
 
@@ -652,8 +667,18 @@ class BacktestEngine:
         }
 
     def _temporal_analysis(self) -> Dict:
+        """Incluye:
+        - performance_by_day (weekday)
+        - performance_by_hour (buckets legacy)
+        - performance_by_session (NUEVO: EU/US en horario Europe/Madrid)
+        """
         if not self.trades:
-            return {'performance_by_day': {}, 'performance_by_hour': {}, 'performance_by_month': {}}
+            return {
+                'performance_by_day': {},
+                'performance_by_hour': {},
+                'performance_by_month': {},
+                'performance_by_session': {},  # NUEVO
+            }
 
         # Día de la semana
         by_day: Dict[str, Dict] = {}
@@ -668,7 +693,7 @@ class BacktestEngine:
                     'avg_pnl': float(np.mean([t.pnl for t in dtrades])),
                 }
 
-        # Hora UTC (buckets EU/US)
+        # Buckets legacy por hora UTC (se mantiene por compatibilidad)
         buckets = {'morning': [], 'afternoon': [], 'evening': []}
         for t in self.trades:
             if 7 <= t.hour_of_day < 12:
@@ -689,7 +714,55 @@ class BacktestEngine:
                     'avg_pnl': float(np.mean([t.pnl for t in lst])),
                 }
 
-        return {'performance_by_day': by_day, 'performance_by_hour': by_hour, 'performance_by_month': {}}
+        # -------------------------------
+        # NUEVO: Sesiones EU/US (CET/CEST)
+        # -------------------------------
+        # Definición (Europe/Madrid):
+        #   eu_open: 08:00–12:00
+        #   eu_pm  : 12:00–16:00 (nota: 15:30–18:00 será us_open, ver prioridad)
+        #   us_open: 15:30–18:00
+        #   us_pm  : 18:00–22:00
+        #
+        # Si hay solape (15:30–16:00), se asigna PRIORIDAD a us_open.
+        sessions = {'eu_open': [], 'eu_pm': [], 'us_open': [], 'us_pm': []}
+        tz_madrid = "Europe/Madrid"
+
+        for t in self.trades:
+            # Convertimos la hora de salida a horario de Madrid
+            ts = pd.Timestamp(t.exit_date, tz='UTC').tz_convert(tz_madrid)
+            hm = ts.hour + ts.minute / 60.0
+
+            # Prioridad: us_open primero
+            if 15.5 <= hm < 18.0:
+                sessions['us_open'].append(t)
+            elif 8.0 <= hm < 12.0:
+                sessions['eu_open'].append(t)
+            elif 12.0 <= hm < 16.0:
+                sessions['eu_pm'].append(t)
+            elif 18.0 <= hm < 22.0:
+                sessions['us_pm'].append(t)
+            # fuera de sesión -> sin asignar (quedará fuera del resumen por sesión)
+
+        by_session: Dict[str, Dict] = {}
+        for name, lst in sessions.items():
+            if lst:
+                winners = [x for x in lst if x.is_winner]
+                gains = sum(x.pnl for x in lst if x.pnl > 0)
+                losses = abs(sum(x.pnl for x in lst if x.pnl < 0))
+                by_session[name] = {
+                    'total_trades': len(lst),
+                    'win_rate': (len(winners) / len(lst)) * 100.0,
+                    'profit_factor': (gains / losses) if losses > 0 else float('inf'),
+                    'total_pnl': float(sum(x.pnl for x in lst)),
+                    'avg_pnl': float(np.mean([x.pnl for x in lst])),
+                }
+
+        return {
+            'performance_by_day': by_day,
+            'performance_by_hour': by_hour,
+            'performance_by_month': {},  # placeholder
+            'performance_by_session': by_session,  # NUEVO
+        }
 
     def _regime_analysis(self) -> Dict:
         if not self.trades:
@@ -724,8 +797,8 @@ class BacktestEngine:
 # --------------------------------------------------------------------------------------
 # Export helpers (guardar en reports/run_<ts>/ por defecto)
 # --------------------------------------------------------------------------------------
-
 from typing import Union as _Union  # evitar colisión de nombre arriba
+
 _last_report_dir: Optional[Path] = None  # fallback si se llama fuera del engine
 
 
@@ -742,8 +815,8 @@ def _resolve_out_path(default_name: str, report_dir: Optional[_Union[str, Path]]
 
 def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trades.csv', *, report_dir: Optional[_Union[str, Path]] = None) -> Path:
     """
-    Exporta trades a CSV. Si no se especifica report_dir, guarda en reports/run_<ts>/.
-    Devuelve la ruta escrita.
+    Exporta trades a CSV.
+    Si no se especifica report_dir, guarda en reports/run_<ts>/. Devuelve la ruta escrita.
     """
     global _last_report_dir
     out_path = _resolve_out_path(filename, report_dir)
@@ -802,7 +875,6 @@ def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trad
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
     logger.info(f"✅ Trades exportados a {out_path.as_posix()}")
-
     _last_report_dir = out_path.parent
     return out_path
 
@@ -810,8 +882,7 @@ def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trad
 def export_summary_to_json(results: BacktestResults | Dict, filename: str = 'metrics.json', *, report_dir: Optional[_Union[str, Path]] = None) -> Path:
     """
     Exporta un resumen a JSON (compatible con BacktestResults o dict legacy).
-    Si no se especifica report_dir, guarda en reports/run_<ts>/.
-    Devuelve la ruta escrita.
+    Si no se especifica report_dir, guarda en reports/run_<ts>/. Devuelve la ruta escrita.
     """
     import json
     global _last_report_dir
@@ -843,6 +914,7 @@ def export_summary_to_json(results: BacktestResults | Dict, filename: str = 'met
             'temporal': {
                 'by_day': results.performance_by_day,
                 'by_hour': results.performance_by_hour,
+                'by_session': results.performance_by_session,   # NUEVO
                 'by_regime': results.performance_by_regime,
             },
         }
@@ -877,5 +949,26 @@ def export_summary_to_json(results: BacktestResults | Dict, filename: str = 'met
         json.dump(summary, f, indent=2, default=str, ensure_ascii=False)
 
     logger.info(f"✅ Resumen exportado a {out_path.as_posix()}")
+    _last_report_dir = out_path.parent
+    return out_path
+
+
+def export_equity_to_csv(results: BacktestResults | Dict, filename: str = 'equity.csv', *, report_dir: Optional[_Union[str, Path]] = None) -> Path:
+    """
+    NUEVO: exporta la curva de equity (date, equity, cash, open_positions) a CSV.
+    Si no se especifica report_dir, guarda en reports/run_<ts>/. Devuelve la ruta escrita.
+    """
+    global _last_report_dir
+    out_path = _resolve_out_path(filename, report_dir)
+
+    if isinstance(results, BacktestResults):
+        rows = results.equity_curve
+    else:
+        rows = results.get('equity_curve', [])
+
+    df = pd.DataFrame(rows)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_path, index=False)
+    logger.info(f"✅ Equity exportada a {out_path.as_posix()}")
     _last_report_dir = out_path.parent
     return out_path
