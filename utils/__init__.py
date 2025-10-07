@@ -6,6 +6,8 @@ from .helpers import (
     format_percentage
 )
 from .logger_manager import SessionLogger
+from .circuit_breaker import CircuitBreaker
+from .capital_tracker import CapitalTracker
 
 __all__ = [
     'setup_console_encoding',
@@ -13,5 +15,7 @@ __all__ = [
     'looks_like_equity',
     'format_currency',
     'format_percentage',
-    'SessionLogger'
+    'SessionLogger',
+    'CircuitBreaker',
+    'CapitalTracker'
 ]

@@ -1,5 +1,5 @@
 """
-Bot de trading principal - Orquestador (Con persistencia en BD y logs estructurados)
+Bot de trading principal - Orquestador (Con persistencia en BD, logs estructurados y Circuit Breaker)
 """
 
 import time
@@ -15,13 +15,14 @@ from trading.position_manager import PositionManager
 from utils.helpers import safe_float
 from utils.bot_controller import BotController
 from utils.logger_manager import SessionLogger
+from utils.circuit_breaker import CircuitBreaker
 from database.database_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 
 class TradingBot:
-    """Bot de trading intraday - Orquestador principal con persistencia y logs"""
+    """Bot de trading intraday - Orquestador principal con persistencia, logs y circuit breaker"""
     
     def __init__(self):
         self.api = CapitalClient()
@@ -29,6 +30,7 @@ class TradingBot:
         self.position_manager = PositionManager(self.api)
         self.controller = BotController()
         self.db_manager = DatabaseManager()
+        self.circuit_breaker = CircuitBreaker()
         self.session_logger = None
         self.account_info = {}
         self.is_running = False
@@ -37,8 +39,8 @@ class TradingBot:
     def run(self):
         """Inicia el bot de trading"""
         logger.info("="*60)
-        logger.info("BOT INTRADAY TRADING - Modo Modular v6.3")
-        logger.info("Con control manual, persistencia en BD y logs estructurados")
+        logger.info("BOT INTRADAY TRADING - Modo Modular v6.4")
+        logger.info("Con control manual, persistencia en BD, logs y Circuit Breaker")
         logger.info("="*60)
         
         self.is_running = True
@@ -52,6 +54,10 @@ class TradingBot:
         self.account_info = self.api.get_account_info()
         balance, available = self.position_manager.get_account_balance(self.account_info)
         self._log_account_status()
+        
+        # Inicializar circuit breaker con balance actual
+        self.circuit_breaker.initialize(balance)
+        logger.info(f"🛡️  Circuit Breaker inicializado con balance: €{balance:.2f}")
         
         # Iniciar sesión en BD y sistema de logs
         try:
@@ -76,6 +82,22 @@ class TradingBot:
                     time.sleep(10)
                     continue
                 
+                # Verificar circuit breaker ANTES de operar
+                if self.circuit_breaker.is_active():
+                    status = self.circuit_breaker.get_status()
+                    logger.warning(f"🛑 CIRCUIT BREAKER ACTIVO: {status['reason']}")
+                    logger.warning(f"   Estado: {status['message']}")
+                    logger.warning(f"   El bot NO operará hasta que se desactive")
+                    
+                    if self.session_logger:
+                        self.session_logger.log_error(
+                            f"Circuit breaker activo: {status['reason']}",
+                            exception=None
+                        )
+                    
+                    time.sleep(300)  # Esperar 5 minutos
+                    continue
+                
                 if not self.is_trading_hours():
                     logger.info("⏸️  Fuera de horario de trading")
                     time.sleep(300)
@@ -83,6 +105,10 @@ class TradingBot:
                 
                 # Actualizar info de cuenta
                 self.account_info = self.api.get_account_info()
+                balance, available = self.position_manager.get_account_balance(self.account_info)
+                
+                # Actualizar balance en circuit breaker
+                self.circuit_breaker.update_current_balance(balance)
                 
                 # Guardar snapshot de cuenta
                 self._save_account_snapshot()
@@ -287,62 +313,32 @@ class TradingBot:
                     if signal_id and analysis['signal'] in ['BUY', 'SELL']:
                         self.signal_ids[epic] = signal_id
                 except Exception as e:
-                    logger.debug(f"Error guardando señal de {epic}: {e}")
+                    logger.debug(f"Error guardando señal en BD: {e}")
                 
-                atr_str = f"{analysis.get('atr_percent', 0):.2f}%" if analysis.get('atr_percent') else "N/A"
+                # Log en archivo de señales
+                if self.session_logger and analysis['signal'] in ['BUY', 'SELL']:
+                    self.session_logger.log_signal(analysis)
                 
-                if analysis['signal'] == 'NEUTRAL':
-                    reason = analysis['reasons'][0] if analysis['reasons'] else 'Sin señal'
-                    reason = reason[:40] + "..." if len(reason) > 40 else reason
-                    logger.info(
-                        f"{i:<3} {epic:<10} {'⚪ Neutral':<15} {'':<10} {'':<8} "
-                        f"{atr_str:<8} {reason}"
-                    )
-                else:
-                    # Señal válida (BUY o SELL)
-                    conf_str = f"{analysis['confidence']:.0%}"
-                    rsi = analysis['indicators'].get('rsi', 0)
-                    
-                    signal_emoji = "🟢" if analysis['signal'] == 'BUY' else "🔴"
-                    logger.info(
-                        f"{i:<3} {epic:<10} {signal_emoji + ' Señal':<15} "
-                        f"{analysis['signal']:<10} {conf_str:<8} {atr_str:<8} "
-                        f"RSI:{rsi:.0f}"
-                    )
-                    
-                    for reason in analysis['reasons'][:3]:
-                        logger.info(f"    └─ {reason}")
-                    
-                    # Log en archivo de señales
-                    if self.session_logger:
-                        self.session_logger.log_signal(analysis)
-                    
-                    analyses.append(analysis)
+                # Formatear output
+                signal_text = analysis['signal']
+                conf_text = f"{analysis['confidence']:.0%}"
+                atr_text = f"{analysis.get('atr_percent', 0):.2f}%"
+                reason_text = analysis['reasons'][0] if analysis['reasons'] else ""
                 
-                time.sleep(0.2)
+                status = "✅ Válida" if analysis['signal'] in ['BUY', 'SELL'] else "⚪ Neutral"
+                
+                logger.info(
+                    f"{i:<3} {epic:<10} {status:<15} {signal_text:<10} "
+                    f"{conf_text:<8} {atr_text:<8} {reason_text}"
+                )
+                
+                analyses.append(analysis)
                 
             except Exception as e:
-                logger.error(f"{i:<3} {epic:<10} {'❌ Error':<15} {str(e)[:40]}")
-                
-                if self.session_logger:
-                    self.session_logger.log_error(
-                        f"Error analizando {epic}: {e}",
-                        exception=e
-                    )
-                
-                continue
+                logger.error(f"{i:<3} {epic:<10} {'❌ Error':<15} | {str(e)}")
         
         logger.info("-"*80)
-        logger.info(f"✅ Análisis completado")
-        logger.info(f"   Total activos: {len(Config.ASSETS)}")
-        logger.info(f"   Señales detectadas: {len(analyses)}")
-        
-        if analyses:
-            buy_signals = len([a for a in analyses if a['signal'] == 'BUY'])
-            sell_signals = len([a for a in analyses if a['signal'] == 'SELL'])
-            logger.info(f"   🟢 BUY: {buy_signals}  🔴 SELL: {sell_signals}")
-            logger.info(f"   Confianza promedio: {sum(a['confidence'] for a in analyses) / len(analyses):.0%}")
-        
+        logger.info(f"Total señales encontradas: {len(analyses)}")
         logger.info("="*80 + "\n")
         
         return analyses
@@ -604,7 +600,14 @@ class TradingBot:
             'timeframe': Config.TIMEFRAME,
             'enable_mtf': Config.ENABLE_MTF,
             'enable_adx_filter': Config.ENABLE_ADX_FILTER,
-            'min_confidence': Config.MIN_CONFIDENCE
+            'min_confidence': Config.MIN_CONFIDENCE,
+            'circuit_breaker': {
+                'enabled': Config.ENABLE_CIRCUIT_BREAKER,
+                'max_daily_loss': Config.MAX_DAILY_LOSS_PERCENT,
+                'max_weekly_loss': Config.MAX_WEEKLY_LOSS_PERCENT,
+                'max_consecutive_losses': Config.MAX_CONSECUTIVE_LOSSES,
+                'max_drawdown': Config.MAX_TOTAL_DRAWDOWN_PERCENT
+            }
         }
     
     def _save_account_snapshot(self):

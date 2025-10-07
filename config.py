@@ -20,7 +20,7 @@ class Config:
     # ============================================
     
     # CONFIGURACIÓN ANTERIOR (para compatibilidad con dashboard)
-    TARGET_PERCENT_OF_AVAILABLE = 0.40  # 40% del margen DISPONIBLE para todas las operaciones
+    TARGET_PERCENT_OF_AVAILABLE = 0.60  # 40% del margen DISPONIBLE para todas las operaciones
     
     # NUEVA CONFIGURACIÓN
     # Modo de capital máximo: 'PERCENTAGE' o 'FIXED'
@@ -43,7 +43,7 @@ class Config:
     # Límites generales
     MAX_CAPITAL_RISK = 0.70              # % del balance como margen total máximo (límite seguridad)
     MAX_MARGIN_PER_ASSET = 0.35          # % del balance máximo por mismo instrumento
-    MAX_POSITIONS = 3                     # Número máximo de posiciones simultáneas
+    MAX_POSITIONS = 8                     # Número máximo de posiciones simultáneas
     MIN_POSITION_SIZE = 0.01             # Tamaño mínimo de posición
     
     # ============================================
@@ -133,6 +133,18 @@ class Config:
 
     # Acciones al activarse
     CIRCUIT_BREAKER_ACTION = 'PAUSE'   # 'PAUSE' o 'STOP'
+    
+    # ============================================
+    # DISTRIBUCIÓN DE CAPITAL DIARIO (TAREA 5)
+    # ============================================
+    
+    # Días de trading por semana (Lunes a Viernes)
+    TRADING_DAYS_PER_WEEK = 5
+    
+    # Modo de distribución diaria
+    # True = Divide capital semanal en días (recomendado)
+    # False = Usa todo el capital disponible sin límite diario
+    ENABLE_DAILY_CAPITAL_LIMIT = True
 
 
 class TradingMode:
