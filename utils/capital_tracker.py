@@ -1,303 +1,277 @@
 """
-Capital Tracker - Gestión inteligente de capital diario
-Distribuye el capital disponible a lo largo de la semana y prioriza por confianza
+utils/capital_tracker.py
+
+Gestor de capital diario y por trade con priorización por confianza.
+
+Objetivo (Paso 5 de la hoja de ruta):
+- Distribuir el capital operativo en *presupuesto diario* (p. ej. 8% del equity)
+- Asignar a señales priorizando por `confidence`
+- Respetar un máximo por operación (2–5% del equity, configurable)
+- No romper producción: módulo desacoplado, integrable desde `position_manager`
+  o directamente desde el motor de backtesting.
+
+Conceptos clave
+---------------
+- *Daily Budget*: Porcentaje del equity asignable en el día (ej.: 8%).
+- *Per-Trade Cap*: Límite por operación (ej.: 2%–5% del equity).
+- *Confidence Priority*: Se ordenan las señales por `confidence` (desc).
+
+Integración mínima sugerida (sin tocar tests):
+----------------------------------------------
+1) Instanciar el tracker al inicio del día o del backtest:
+       tracker = CapitalTracker(initial_equity, daily_budget_pct=0.08, per_trade_cap_pct=0.03)
+
+2) Antes de abrir posiciones, pedir asignaciones:
+       allocations = tracker.allocate_for_signals(
+           equity=current_equity,
+           signals=signals,  # [{'epic': 'EURUSD', 'confidence': 0.73, 'current_price': 1.0831, ...}, ...]
+           current_dt=current_datetime
+       )
+
+   `allocations` es un dict: { 'EURUSD': euros_asignados, 'GBPUSD': euros_asignados, ... }
+
+3) Al ejecutar una orden, registrar el consumo:
+       size_eur = allocations[signal['epic']]
+       tracker.record_fill(epic=signal['epic'], amount=size_eur, when=current_datetime)
+
+Notas:
+- Si no hay suficiente presupuesto diario, asignará 0 a las señales de menor prioridad.
+- Si una señal no tiene `confidence`, se asume 0.
+- Este módulo es *stateless respecto a la estrategia* y puede testearse en aislamiento.
+
+Autor: Trading Bot — Backtesting/Execution Utilities
 """
 
-import logging
-from datetime import datetime, date
-from typing import Optional, Dict, List
-from config import Config
+from __future__ import annotations
 
-logger = logging.getLogger(__name__)
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    """Devuelve `dt` con tzinfo UTC (si no lo tiene, asume UTC)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _same_utc_day(a: datetime, b: datetime) -> bool:
+    a = _ensure_utc(a)
+    b = _ensure_utc(b)
+    return (a.year, a.month, a.day) == (b.year, b.month, b.day)
+
+
+@dataclass
 class CapitalTracker:
     """
-    Gestor de capital diario con distribución semanal
-    
-    Funcionalidad:
-    - Divide el capital semanal en 5 días de trading
-    - Trackea cuánto capital se ha usado hoy
-    - Resetea automáticamente cada día
-    - Prioriza operaciones por confianza
+    Controla el presupuesto diario y el límite por operación con prioridad por confianza.
     """
-    
-    def __init__(self):
-        self.current_date: Optional[date] = None
-        self.capital_used_today: float = 0.0
-        self.daily_limit: float = 0.0
-        self.available_capital: float = 0.0
-        
-        # Histórico del día
-        self.today_trades: List[Dict] = []
-        
-        # Estado de inicialización
-        self.is_initialized: bool = False
-    
-    def initialize(self, available_balance: float):
+
+    initial_equity: float
+    daily_budget_pct: float = 0.08          # 8% del equity por día (target: 40% semanal / 5 días)
+    per_trade_cap_pct: float = 0.03         # 3% del equity por trade (recomendado 0.02–0.05)
+    min_allocation_eur: float = 0.0         # piso por trade (opcional)
+    last_reset_at: Optional[datetime] = None
+    _spent_today_eur: float = field(default=0.0, init=False)
+
+    # --- API pública --------------------------------------------------------
+
+    def reset_day_if_needed(self, now: datetime) -> None:
         """
-        Inicializa el tracker con el capital disponible
-        
-        Args:
-            available_balance: Balance disponible en la cuenta
+        Reinicia el presupuesto si ha cambiado el día (UTC).
         """
-        self.available_capital = available_balance
-        self.current_date = datetime.now().date()
-        
-        # Calcular límite diario basado en configuración
-        # Capital semanal total = TARGET_PERCENT_OF_AVAILABLE
-        # Distribuido en 5 días de trading
-        weekly_capital = available_balance * Config.TARGET_PERCENT_OF_AVAILABLE
-        self.daily_limit = weekly_capital / Config.TRADING_DAYS_PER_WEEK
-        
-        self.capital_used_today = 0.0
-        self.today_trades = []
-        self.is_initialized = True
-        
-        logger.info("="*70)
-        logger.info("💰 CAPITAL TRACKER INICIALIZADO")
-        logger.info("="*70)
-        logger.info(f"Balance disponible: €{available_balance:,.2f}")
-        logger.info(f"Capital semanal objetivo: €{weekly_capital:,.2f} ({Config.TARGET_PERCENT_OF_AVAILABLE*100:.0f}%)")
-        logger.info(f"Límite diario: €{self.daily_limit:,.2f} ({(self.daily_limit/available_balance)*100:.1f}%)")
-        logger.info(f"Días de trading por semana: {Config.TRADING_DAYS_PER_WEEK}")
-        logger.info("="*70)
-    
-    def update_available_balance(self, new_balance: float):
+        now = _ensure_utc(now)
+        if self.last_reset_at is None or not _same_utc_day(now, self.last_reset_at):
+            self.last_reset_at = now
+            self._spent_today_eur = 0.0
+
+    def budget_today_eur(self, equity: float) -> float:
         """
-        Actualiza el balance disponible y recalcula límites
-        
-        Args:
-            new_balance: Nuevo balance disponible
+        Presupuesto total del día en euros (equity * daily_budget_pct).
         """
-        if not self.is_initialized:
-            self.initialize(new_balance)
+        budget = max(equity, 0.0) * max(self.daily_budget_pct, 0.0)
+        return float(budget)
+
+    def remaining_today_eur(self, equity: float) -> float:
+        """
+        Presupuesto restante para hoy en euros.
+        """
+        remaining = self.budget_today_eur(equity) - self._spent_today_eur
+        return float(max(0.0, remaining))
+
+    def per_trade_cap_eur(self, equity: float) -> float:
+        """
+        Límite por operación en euros (equity * per_trade_cap_pct).
+        """
+        cap = max(equity, 0.0) * max(self.per_trade_cap_pct, 0.0)
+        return float(max(cap, self.min_allocation_eur))
+
+    def allocate_for_signals(
+        self,
+        equity: float,
+        signals: List[Dict],
+        current_dt: datetime,
+        *,
+        allow_partial: bool = True,
+    ) -> Dict[str, float]:
+        """
+        Asigna presupuesto a una lista de señales priorizando por `confidence`.
+
+        Parámetros
+        ----------
+        equity : float
+            Equity actual (para calcular presupuesto y límites).
+        signals : List[Dict]
+            Señales con al menos 'epic' y 'confidence'. Ej.:
+                {'epic': 'EURUSD', 'confidence': 0.72, 'current_price': 1.0831, ...}
+        current_dt : datetime
+            Momento actual (para control de día).
+        allow_partial : bool
+            Si True, la última señal puede recibir menos del `per_trade_cap` si el resto
+            del presupuesto diario no alcanza. Si False, se asigna 0 en ese caso.
+
+        Retorna
+        -------
+        Dict[str, float]
+            Mapa epic -> euros asignados (0 si no alcanzó el presupuesto).
+        """
+        self.reset_day_if_needed(current_dt)
+        remaining = self.remaining_today_eur(equity)
+        cap_per_trade = self.per_trade_cap_eur(equity)
+
+        # Ordenar por confianza desc
+        ordered = sorted(signals, key=lambda s: float(s.get("confidence", 0.0)), reverse=True)
+
+        allocations: Dict[str, float] = {}
+
+        for sig in ordered:
+            epic = str(sig.get("epic", ""))
+            if not epic:
+                continue
+
+            if remaining <= 0.0:
+                allocations[epic] = 0.0
+                continue
+
+            desired = cap_per_trade
+
+            if remaining >= desired:
+                size = desired
+            else:
+                size = remaining if allow_partial else 0.0
+
+            # Enforce mínimo
+            if size < self.min_allocation_eur:
+                allocations[epic] = 0.0
+                continue
+
+            allocations[epic] = float(size)
+            remaining -= size
+
+        return allocations
+
+    def record_fill(self, epic: str, amount: float, when: Optional[datetime] = None) -> None:
+        """
+        Registra el consumo de presupuesto tras una ejecución.
+
+        `amount` es el tamaño monetario de la posición abierta (en euros).
+        """
+        if amount <= 0:
             return
-        
-        self.available_capital = new_balance
-        
-        # Recalcular límite diario
-        weekly_capital = new_balance * Config.TARGET_PERCENT_OF_AVAILABLE
-        self.daily_limit = weekly_capital / Config.TRADING_DAYS_PER_WEEK
-        
-        logger.debug(f"💰 Balance actualizado: €{new_balance:,.2f} | Límite diario: €{self.daily_limit:,.2f}")
-    
-    def check_and_reset_daily(self):
+        if when is not None:
+            self.reset_day_if_needed(when)
+        self._spent_today_eur += float(amount)
+
+    # --- Utilidades --------------------------------------------------------
+
+    def set_limits(self, *, daily_budget_pct: Optional[float] = None, per_trade_cap_pct: Optional[float] = None) -> None:
         """
-        Verifica si cambió el día y resetea el tracking diario
+        Actualiza límites en caliente (útil para experimentos A/B).
         """
-        if not self.is_initialized:
-            return
-        
-        today = datetime.now().date()
-        
-        # Si cambió el día, resetear
-        if today > self.current_date:
-            logger.info("="*70)
-            logger.info(f"📅 NUEVO DÍA DE TRADING: {today.strftime('%Y-%m-%d')}")
-            logger.info("="*70)
-            logger.info(f"Capital usado ayer: €{self.capital_used_today:,.2f}")
-            logger.info(f"Trades ejecutados ayer: {len(self.today_trades)}")
-            logger.info(f"Límite diario renovado: €{self.daily_limit:,.2f}")
-            logger.info("="*70)
-            
-            # Resetear tracking
-            self.current_date = today
-            self.capital_used_today = 0.0
-            self.today_trades = []
-    
-    def get_available_capital_today(self) -> float:
+        if daily_budget_pct is not None:
+            self.daily_budget_pct = float(max(0.0, daily_budget_pct))
+        if per_trade_cap_pct is not None:
+            self.per_trade_cap_pct = float(max(0.0, per_trade_cap_pct))
+
+    def snapshot(self, equity: float, when: datetime) -> Dict:
         """
-        Obtiene el capital disponible para operar hoy
-        
-        Returns:
-            float: Capital disponible restante para hoy
+        Devuelve un resumen del estado interno (para logging/monitoring).
         """
-        if not self.is_initialized:
-            logger.warning("⚠️  Capital Tracker no inicializado")
-            return 0.0
-        
-        # Verificar reset diario
-        self.check_and_reset_daily()
-        
-        # Capital disponible = límite diario - usado hoy
-        remaining = max(self.daily_limit - self.capital_used_today, 0.0)
-        
-        return remaining
-    
-    def can_trade_today(self) -> bool:
-        """
-        Verifica si todavía se puede operar hoy
-        
-        Returns:
-            bool: True si hay capital disponible
-        """
-        remaining = self.get_available_capital_today()
-        return remaining > 0
-    
-    def allocate_capital(self, amount: float, epic: str, confidence: float) -> bool:
-        """
-        Intenta asignar capital para una operación
-        
-        Args:
-            amount: Cantidad de capital a asignar
-            epic: Activo a operar
-            confidence: Confianza de la señal (0-1)
-            
-        Returns:
-            bool: True si se pudo asignar, False si excede límite
-        """
-        if not self.is_initialized:
-            logger.warning("⚠️  Capital Tracker no inicializado")
-            return False
-        
-        # Verificar reset diario
-        self.check_and_reset_daily()
-        
-        # Verificar si hay suficiente capital disponible
-        available = self.get_available_capital_today()
-        
-        if amount > available:
-            logger.warning(
-                f"⛔ Capital insuficiente para {epic}: "
-                f"Requiere €{amount:.2f}, Disponible hoy: €{available:.2f}"
-            )
-            return False
-        
-        # Asignar capital
-        self.capital_used_today += amount
-        
-        # Registrar trade
-        self.today_trades.append({
-            'epic': epic,
-            'amount': amount,
-            'confidence': confidence,
-            'timestamp': datetime.now()
-        })
-        
-        logger.info(
-            f"✅ Capital asignado: €{amount:.2f} para {epic} "
-            f"(Confianza: {confidence:.0%}) | "
-            f"Usado hoy: €{self.capital_used_today:.2f}/{self.daily_limit:.2f}"
-        )
-        
-        return True
-    
-    def get_status(self) -> Dict:
-        """
-        Obtiene el estado actual del capital tracker
-        
-        Returns:
-            Dict con información del estado
-        """
-        if not self.is_initialized:
-            return {
-                'initialized': False,
-                'message': 'Capital Tracker no inicializado'
-            }
-        
-        # Verificar reset diario
-        self.check_and_reset_daily()
-        
-        available_today = self.get_available_capital_today()
-        usage_percent = (self.capital_used_today / self.daily_limit * 100) if self.daily_limit > 0 else 0
-        
+        self.reset_day_if_needed(when)
         return {
-            'initialized': True,
-            'current_date': self.current_date.isoformat(),
-            'daily_limit': self.daily_limit,
-            'capital_used_today': self.capital_used_today,
-            'available_today': available_today,
-            'usage_percent': usage_percent,
-            'trades_today': len(self.today_trades),
-            'can_trade': self.can_trade_today(),
-            'available_capital': self.available_capital
+            "date_utc": _ensure_utc(when).date().isoformat(),
+            "daily_budget_pct": self.daily_budget_pct,
+            "per_trade_cap_pct": self.per_trade_cap_pct,
+            "budget_today_eur": self.budget_today_eur(equity),
+            "spent_today_eur": self._spent_today_eur,
+            "remaining_today_eur": self.remaining_today_eur(equity),
         }
-    
-    def get_daily_summary(self) -> Dict:
-        """
-        Obtiene un resumen del día actual
-        
-        Returns:
-            Dict con resumen del día
-        """
-        status = self.get_status()
-        
-        if not status['initialized']:
-            return status
-        
-        # Calcular estadísticas de trades del día
-        total_trades = len(self.today_trades)
-        avg_confidence = 0.0
-        
-        if total_trades > 0:
-            avg_confidence = sum(t['confidence'] for t in self.today_trades) / total_trades
-        
-        return {
-            **status,
-            'summary': {
-                'total_trades_today': total_trades,
-                'average_confidence': avg_confidence,
-                'total_allocated': self.capital_used_today,
-                'remaining_for_today': status['available_today']
-            }
-        }
-    
-    def prioritize_signals(self, signals: List[Dict]) -> List[Dict]:
-        """
-        Ordena señales por confianza (mayor a menor)
-        
-        Args:
-            signals: Lista de análisis con campo 'confidence'
-            
-        Returns:
-            Lista ordenada por confianza descendente
-        """
-        if not signals:
-            return []
-        
-        # Ordenar por confianza (mayor primero)
-        sorted_signals = sorted(
-            signals,
-            key=lambda x: x.get('confidence', 0),
-            reverse=True
-        )
-        
-        logger.info("📊 Señales priorizadas por confianza:")
-        for i, signal in enumerate(sorted_signals, 1):
-            logger.info(
-                f"  {i}. {signal.get('epic', 'N/A')}: "
-                f"{signal.get('signal', 'N/A')} "
-                f"(Confianza: {signal.get('confidence', 0):.0%})"
-            )
-        
-        return sorted_signals
-    
-    def log_daily_usage(self):
-        """
-        Log del uso diario de capital (para debugging)
-        """
-        if not self.is_initialized:
-            return
-        
-        self.check_and_reset_daily()
-        
-        logger.info("\n" + "="*70)
-        logger.info("📊 USO DE CAPITAL DIARIO")
-        logger.info("="*70)
-        logger.info(f"Fecha: {self.current_date}")
-        logger.info(f"Límite diario: €{self.daily_limit:,.2f}")
-        logger.info(f"Capital usado: €{self.capital_used_today:,.2f}")
-        logger.info(f"Capital disponible: €{self.get_available_capital_today():,.2f}")
-        logger.info(f"Utilización: {(self.capital_used_today/self.daily_limit)*100:.1f}%")
-        logger.info(f"Trades hoy: {len(self.today_trades)}")
-        
-        if self.today_trades:
-            logger.info("\nDetalles de trades:")
-            for i, trade in enumerate(self.today_trades, 1):
-                logger.info(
-                    f"  {i}. {trade['epic']}: €{trade['amount']:.2f} "
-                    f"(Conf: {trade['confidence']:.0%}) @ {trade['timestamp'].strftime('%H:%M:%S')}"
-                )
-        
-        logger.info("="*70 + "\n")
+
+
+# =========================
+# Funciones puras auxiliares
+# =========================
+
+def allocate_by_confidence(
+    equity: float,
+    signals: List[Dict],
+    *,
+    daily_budget_pct: float = 0.08,
+    per_trade_cap_pct: float = 0.03,
+    min_allocation_eur: float = 0.0,
+    allow_partial: bool = True,
+) -> Dict[str, float]:
+    """
+    Versión funcional (pura) de asignación por confianza — útil para tests unitarios.
+
+    Ejemplo:
+        signals = [
+            {"epic": "EURUSD", "confidence": 0.9},
+            {"epic": "GBPUSD", "confidence": 0.6},
+            {"epic": "SPX500", "confidence": 0.3},
+        ]
+        allocate_by_confidence(10000, signals, daily_budget_pct=0.08, per_trade_cap_pct=0.03)
+        # => {'EURUSD': 300.0, 'GBPUSD': 300.0, 'SPX500': 200.0}  (si allow_partial=True)
+    """
+    tracker = CapitalTracker(
+        initial_equity=equity,
+        daily_budget_pct=daily_budget_pct,
+        per_trade_cap_pct=per_trade_cap_pct,
+        min_allocation_eur=min_allocation_eur,
+    )
+    now = datetime.now(timezone.utc)
+    tracker.reset_day_if_needed(now)
+    return tracker.allocate_for_signals(
+        equity=equity,
+        signals=signals,
+        current_dt=now,
+        allow_partial=allow_partial,
+    )
+
+
+# =========================
+# Ejecución de prueba mínima
+# =========================
+
+if __name__ == "__main__":
+    # Demo simple
+    eq = 10000.0
+    tracker = CapitalTracker(eq, daily_budget_pct=0.08, per_trade_cap_pct=0.03)
+    now = datetime.now(timezone.utc)
+
+    demo_signals = [
+        {"epic": "EURUSD", "confidence": 0.82, "current_price": 1.0831},
+        {"epic": "GBPUSD", "confidence": 0.67, "current_price": 1.2735},
+        {"epic": "SPX500", "confidence": 0.41, "current_price": 5560.0},
+        {"epic": "XAUUSD", "confidence": 0.20, "current_price": 2400.0},
+    ]
+
+    allocs = tracker.allocate_for_signals(eq, demo_signals, now)
+    print("Asignaciones:", allocs)
+    # Simular fills
+    for epic, amt in allocs.items():
+        if amt > 0:
+            tracker.record_fill(epic, amt, now)
+
+    print("Snapshot:", tracker.snapshot(eq, now))

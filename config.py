@@ -146,6 +146,14 @@ class Config:
     # False = Usa todo el capital disponible sin límite diario
     ENABLE_DAILY_CAPITAL_LIMIT = True
 
+    # --- Costes de trading ---
+    COMMISSION_PER_TRADE = 0.5           # en EUR por operación (aproximado)
+    SPREAD_IN_POINTS_DEFAULT = 0.8       # spread medio
+    POINT_VALUE_DEFAULT = 1.0            # valor de 1 punto (ajusta según activo)
+    COST_OVERRIDES = {
+        "GOLD": {"point_value": 10.0, "spread_in_points": 0.3, "commission_per_trade": 0.8},
+    }
+
 
 class TradingMode:
     """Modos de trading disponibles"""

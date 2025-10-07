@@ -8,6 +8,8 @@ from .helpers import (
 from .logger_manager import SessionLogger
 from .circuit_breaker import CircuitBreaker
 from .capital_tracker import CapitalTracker
+from .cost_calculator import apply_costs
+from .market_regime import detect_regime
 
 __all__ = [
     'setup_console_encoding',
@@ -17,5 +19,7 @@ __all__ = [
     'format_percentage',
     'SessionLogger',
     'CircuitBreaker',
-    'CapitalTracker'
+    'CapitalTracker',
+    'apply_costs',
+    'detect_regime'
 ]
