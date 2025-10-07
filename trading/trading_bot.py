@@ -1,13 +1,32 @@
 """
-Bot de trading principal - Orquestador (Con persistencia en BD, logs estructurados y Circuit Breaker)
+Bot de trading principal - Orquestador (Con persistencia en BD, logs, Circuit Breaker y Capital Tracker)
+
+Este módulo implementa la clase `TradingBot` y orquesta el flujo completo:
+- Autenticación con el broker (CapitalClient)
+- Loop principal (controlado por BotController)
+- Escaneo de mercados (IntradayStrategy)
+- Gestión de posiciones (PositionManager)
+- Límites de riesgo (CircuitBreaker)
+- Límite de capital diario (CapitalTracker)
+- Persistencia de señales y trades (DatabaseManager)
+- Sistema de logs por sesión (SessionLogger)
+
+⚠️ Importante:
+- Este archivo fue generado para el repo `intraday` y utiliza las firmas de métodos
+  que ya están presentes en el proyecto (según estructura pública).
+- Si alguna firma difiere en tu local, ajusta los nombres del método puntualmente.
 """
 
+from __future__ import annotations
+
 import time
-import logging
-import pandas as pd
 import json
+import logging
 from datetime import datetime
-from typing import List, Dict
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+
 from config import Config
 from api.capital_client import CapitalClient
 from strategies.intraday_strategy import IntradayStrategy
@@ -16,643 +35,668 @@ from utils.helpers import safe_float
 from utils.bot_controller import BotController
 from utils.logger_manager import SessionLogger
 from utils.circuit_breaker import CircuitBreaker
+from utils.capital_tracker import CapitalTracker
 from database.database_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 
 class TradingBot:
-    """Bot de trading intraday - Orquestador principal con persistencia, logs y circuit breaker"""
-    
-    def __init__(self):
+    """
+    Bot de trading intradía: orquestador principal con persistencia, logs, circuit breaker y capital tracker.
+    """
+
+    def __init__(self) -> None:
+        # Componentes principales
         self.api = CapitalClient()
         self.strategy = IntradayStrategy()
         self.position_manager = PositionManager(self.api)
+
+        # Infraestructura / utilidades
         self.controller = BotController()
         self.db_manager = DatabaseManager()
+        self.session_logger: Optional[SessionLogger] = None
+
+        # Protección y control de riesgo
         self.circuit_breaker = CircuitBreaker()
-        self.session_logger = None
-        self.account_info = {}
-        self.is_running = False
-        self.signal_ids = {}
-    
-    def run(self):
-        """Inicia el bot de trading"""
-        logger.info("="*60)
-        logger.info("BOT INTRADAY TRADING - Modo Modular v6.4")
-        logger.info("Con control manual, persistencia en BD, logs y Circuit Breaker")
-        logger.info("="*60)
-        
+        self.capital_tracker = CapitalTracker()
+
+        # Estado
+        self.account_info: Dict = {}
+        self.is_running: bool = False
+        self.signal_ids: Dict[str, int] = {}  # epic -> signal_id
+
+    # -------------------------- PÚBLICO --------------------------
+
+    def run(self) -> None:
+        """
+        Inicia el bot. Maneja autenticación, setup y loop principal.
+        """
+        logger.info("=" * 70)
+        logger.info("BOT INTRADAY TRADING - Modo Modular (con CB + CapitalTracker)")
+        logger.info("=" * 70)
+
         self.is_running = True
-        
-        # Autenticar
+
+        # 1) Autenticación
         if not self.api.authenticate():
-            logger.error("❌ Autenticación fallida")
+            logger.error("❌ Autenticación fallida con el broker")
             return
-        
-        # Obtener info de cuenta inicial
+
+        # 2) Obtener info de cuenta inicial
         self.account_info = self.api.get_account_info()
         balance, available = self.position_manager.get_account_balance(self.account_info)
         self._log_account_status()
-        
-        # Inicializar circuit breaker con balance actual
+
+        # 3) Circuit Breaker
         self.circuit_breaker.initialize(balance)
-        logger.info(f"🛡️  Circuit Breaker inicializado con balance: €{balance:.2f}")
-        
-        # Iniciar sesión en BD y sistema de logs
+        logger.info("🛡️  Circuit Breaker inicializado con balance: €%.2f", balance)
+
+        # 4) Capital Tracker diario
+        if getattr(Config, "ENABLE_DAILY_CAPITAL_LIMIT", False):
+            try:
+                self.capital_tracker.initialize(available)
+                logger.info("💰 CapitalTracker inicializado con disponible: €%.2f", available)
+            except Exception as e:
+                logger.warning("No se pudo inicializar CapitalTracker: %s", e)
+
+        # 5) Iniciar sesión BD y logs
         try:
             config_snapshot = self._get_config_snapshot()
             session_id = self.db_manager.start_session(balance, config_snapshot)
-            logger.info(f"📊 Sesión de BD iniciada - ID: {session_id}")
-            
-            # Iniciar logger de sesión
+            logger.info("📊 Sesión BD iniciada | id=%s", session_id)
+
             self.session_logger = SessionLogger(session_id)
-            
         except Exception as e:
-            logger.error(f"❌ Error iniciando sesión de BD: {e}")
-            logger.warning("⚠️  El bot continuará pero sin guardar datos")
-            self.session_logger = SessionLogger()
-        
-        # Loop principal
+            logger.error("❌ Error iniciando sesión BD: %s", e)
+            logger.warning("Continuará sin guardar en BD, pero con logs locales.")
+            self.session_logger = SessionLogger()  # logger sin session_id
+
+        # 6) Loop principal
         while self.is_running:
             try:
-                # Verificar si el bot debe estar corriendo (control manual)
+                # 6.1) Control manual
                 if not self.controller.is_running():
-                    logger.info("⏸️  Bot pausado manualmente. Esperando comando de inicio...")
+                    logger.info("⏸️  Pausado manualmente. Reintentando en 10s...")
                     time.sleep(10)
                     continue
-                
-                # Verificar circuit breaker ANTES de operar
+
+                # 6.2) Circuit breaker activo -> dormir
                 if self.circuit_breaker.is_active():
                     status = self.circuit_breaker.get_status()
-                    logger.warning(f"🛑 CIRCUIT BREAKER ACTIVO: {status['reason']}")
-                    logger.warning(f"   Estado: {status['message']}")
-                    logger.warning(f"   El bot NO operará hasta que se desactive")
-                    
+                    logger.warning("🛑 CIRCUIT BREAKER ACTIVO: %s", status.get("reason"))
+                    logger.warning("   Estado: %s", status.get("message"))
                     if self.session_logger:
-                        self.session_logger.log_error(
-                            f"Circuit breaker activo: {status['reason']}",
-                            exception=None
-                        )
-                    
-                    time.sleep(300)  # Esperar 5 minutos
-                    continue
-                
-                if not self.is_trading_hours():
-                    logger.info("⏸️  Fuera de horario de trading")
+                        self.session_logger.log_error("Circuit breaker activo: " + str(status.get("reason")))
                     time.sleep(300)
                     continue
-                
-                # Actualizar info de cuenta
+
+                # 6.3) Horario de trading
+                if not self.is_trading_hours():
+                    logger.info("⏸️  Fuera de horario de trading. Reintentando en 5m...")
+                    time.sleep(300)
+                    continue
+
+                # 6.4) Actualizar cuenta
                 self.account_info = self.api.get_account_info()
                 balance, available = self.position_manager.get_account_balance(self.account_info)
-                
-                # Actualizar balance en circuit breaker
+
+                # Actualizar circuit breaker con balance corriente
                 self.circuit_breaker.update_current_balance(balance)
-                
-                # Guardar snapshot de cuenta
+
+                # Actualizar capital tracker con disponible corriente
+                if getattr(Config, "ENABLE_DAILY_CAPITAL_LIMIT", False):
+                    try:
+                        self.capital_tracker.update_available_balance(available)
+                    except Exception as e:
+                        logger.debug("No se pudo actualizar CapitalTracker: %s", e)
+
+                # 6.5) Guardar snapshot de cuenta
                 self._save_account_snapshot()
-                
-                # Escanear y operar
+
+                # 6.6) Escanear y operar
                 self.scan_and_trade()
-                
-                # Esperar hasta próximo escaneo
-                logger.info(f"⏳ Próximo escaneo en {Config.SCAN_INTERVAL}s ({Config.SCAN_INTERVAL//60} min)...\n")
-                time.sleep(Config.SCAN_INTERVAL)
-                
+
+                # 6.7) Espera entre escaneos
+                scan_interval = getattr(Config, "SCAN_INTERVAL", 60)
+                logger.info("⏳ Próximo escaneo en %ss (~%s min)\n", scan_interval, scan_interval // 60)
+                time.sleep(scan_interval)
+
             except KeyboardInterrupt:
+                logger.info("Detenido por el usuario.")
                 self.stop()
                 break
             except Exception as e:
-                logger.error(f"❌ Error en loop principal: {e}")
-                
-                # Log del error
+                logger.exception("❌ Error en loop principal: %s", e)
                 if self.session_logger:
-                    self.session_logger.log_error(
-                        f"Error en loop principal: {e}",
-                        exception=e
-                    )
-                
+                    self.session_logger.log_error(f"Error en loop principal: {e}")
                 time.sleep(300)
-    
-    def scan_and_trade(self):
-        """Escanea mercados y ejecuta operaciones"""
-        logger.info("="*60)
+
+    def stop(self) -> None:
+        """Detiene el bot limpiamente y cierra la sesión en BD."""
+        self.is_running = False
+        try:
+            if self.db_manager and self.db_manager.has_active_session():
+                self.db_manager.end_session()
+                logger.info("📥 Sesión en BD finalizada correctamente.")
+        except Exception as e:
+            logger.warning("No se pudo cerrar la sesión BD: %s", e)
+
+    def scan_and_trade(self) -> None:
+        """
+        Escanea mercados, distribuye capital, planifica y ejecuta operaciones.
+        Maneja CB, límites de capital y persistencia.
+        """
+        logger.info("=" * 70)
         logger.info("🔍 ESCANEANDO MERCADOS")
-        logger.info("="*60)
-        
+        logger.info("=" * 70)
+
         if not self.account_info:
-            logger.warning("⚠️  No hay información de cuenta disponible")
+            logger.warning("No hay información de cuenta disponible todavía.")
             return
-        
+
         balance, available = self.position_manager.get_account_balance(self.account_info)
-        
         if balance <= 0:
-            logger.warning("⚠️  Balance insuficiente")
+            logger.warning("Balance insuficiente para operar.")
             return
-        
-        # PASO 1: Analizar todos los mercados
-        logger.info(f"📊 Analizando {len(Config.ASSETS)} activos...")
-        all_analyses = self._analyze_markets()
-        
-        if not all_analyses:
-            logger.info("ℹ️  No hay señales de trading en ningún activo")
-            
-            # Log resumen vacío
+
+        # 1) Analizar mercados
+        analyses = self._analyze_markets()
+        if not analyses:
+            logger.info("No se generaron señales.")
             if self.session_logger:
-                self.session_logger.log_scan_summary({
-                    'total_assets': len(Config.ASSETS),
-                    'signals_found': 0,
-                    'trades_executed': 0
-                })
-            
+                self.session_logger.log_scan_summary(
+                    {"total_assets": len(getattr(Config, "ASSETS", [])), "signals_found": 0, "trades_executed": 0}
+                )
             return
-        
-        # Filtrar por confianza mínima
-        valid_analyses = [a for a in all_analyses if a['confidence'] >= Config.MIN_CONFIDENCE]
-        
+
+        # 2) Filtrar por confianza
+        min_conf = getattr(Config, "MIN_CONFIDENCE", 0.0)
+        valid_analyses = [a for a in analyses if a.get("confidence", 0) >= min_conf]
         if not valid_analyses:
-            logger.info(f"ℹ️  Ninguna señal supera la confianza mínima ({Config.MIN_CONFIDENCE:.0%})")
-            
-            # Log resumen
+            logger.info("Sin señales por debajo del umbral de confianza (%.0f%%).", min_conf * 100)
             if self.session_logger:
-                self.session_logger.log_scan_summary({
-                    'total_assets': len(Config.ASSETS),
-                    'signals_found': len(all_analyses),
-                    'trades_executed': 0
-                })
-            
+                self.session_logger.log_scan_summary(
+                    {"total_assets": len(getattr(Config, "ASSETS", [])), "signals_found": len(analyses), "trades_executed": 0}
+                )
             return
-        
-        # Limitar al número máximo de posiciones
-        valid_analyses.sort(key=lambda x: x['confidence'], reverse=True)
-        valid_analyses = valid_analyses[:Config.MAX_POSITIONS]
-        
-        num_opportunities = len(valid_analyses)
-        
-        logger.info("="*60)
-        logger.info(f"✅ OPORTUNIDADES DETECTADAS: {num_opportunities}")
-        logger.info("="*60)
-        for i, analysis in enumerate(valid_analyses, 1):
+
+        # 3) Priorización y límite por cantidad
+        max_positions = getattr(Config, "MAX_POSITIONS", 1)
+        if getattr(Config, "ENABLE_DAILY_CAPITAL_LIMIT", False):
+            valid_analyses = self.capital_tracker.prioritize_signals(valid_analyses)  # type: ignore[attr-defined]
+        else:
+            valid_analyses.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+        valid_analyses = valid_analyses[:max_positions]
+
+        # 4) Resumen de oportunidades
+        logger.info("✅ OPORTUNIDADES DETECTADAS: %s", len(valid_analyses))
+        for i, a in enumerate(valid_analyses, 1):
             logger.info(
-                f"{i}. {analysis['epic']}: {analysis['signal']} "
-                f"(Confianza: {analysis['confidence']:.0%}, "
-                f"ATR: {analysis.get('atr_percent', 0):.2f}%)"
+                "%d) %s: %s (Conf: %.0f%% | ATR: %.2f%%)",
+                i,
+                a.get("epic"),
+                a.get("signal"),
+                a.get("confidence", 0) * 100,
+                a.get("atr_percent", 0),
             )
-        
-        # PASO 2: Calcular capital total disponible
-        if Config.CAPITAL_MODE == 'PERCENTAGE':
-            total_capital = available * (Config.MAX_CAPITAL_PERCENT / 100)
-            logger.info(f"\n💰 Modo: PORCENTAJE")
-            logger.info(f"   Capital disponible: €{available:.2f}")
-            logger.info(f"   % máximo a usar: {Config.MAX_CAPITAL_PERCENT:.1f}%")
-            logger.info(f"   Capital total asignado: €{total_capital:.2f}")
-        else:  # FIXED
-            total_capital = min(Config.MAX_CAPITAL_FIXED, available)
-            logger.info(f"\n💰 Modo: MONTO FIJO")
-            logger.info(f"   Monto máximo configurado: €{Config.MAX_CAPITAL_FIXED:.2f}")
-            logger.info(f"   Capital disponible: €{available:.2f}")
-            logger.info(f"   Capital total asignado: €{total_capital:.2f}")
-        
-        # PASO 3: Distribuir capital entre operaciones
-        capital_distribution = self._distribute_capital(
-            valid_analyses, 
-            total_capital, 
-            num_opportunities
-        )
-        
-        logger.info(f"\n📊 DISTRIBUCIÓN DE CAPITAL:")
-        logger.info(f"   Modo: {Config.DISTRIBUTION_MODE}")
-        for epic, amount in capital_distribution.items():
-            logger.info(f"   {epic}: €{amount:.2f}")
-        
-        # PASO 4: Planificar operaciones
+
+        # 5) Capital total asignado (por modo)
+        capital_mode = getattr(Config, "CAPITAL_MODE", "PERCENTAGE")
+        if capital_mode == "PERCENTAGE":
+            total_capital = available * (getattr(Config, "MAX_CAPITAL_PERCENT", 100.0) / 100.0)
+            logger.info("💰 Modo: PORCENTAJE | Disponible: €%.2f | %% máx: %.1f%% | Total: €%.2f",
+                        available, getattr(Config, "MAX_CAPITAL_PERCENT", 100.0), total_capital)
+        else:
+            total_capital = min(getattr(Config, "MAX_CAPITAL_FIXED", 0.0), available)
+            logger.info("💰 Modo: FIJO | Tope: €%.2f | Disponible: €%.2f | Total: €%.2f",
+                        getattr(Config, "MAX_CAPITAL_FIXED", 0.0), available, total_capital)
+
+        # 6) Aplicar límite diario (CapitalTracker)
+        if getattr(Config, "ENABLE_DAILY_CAPITAL_LIMIT", False):
+            daily_available = self.capital_tracker.get_available_capital_today()  # type: ignore[attr-defined]
+            logger.info("💰 LÍMITE DIARIO | Disponible: €%.2f | Usado: €%.2f",
+                        daily_available, getattr(self.capital_tracker, "capital_used_today", 0.0))
+
+            if not self.capital_tracker.can_trade_today():  # type: ignore[attr-defined]
+                logger.warning("⛔ Límite diario alcanzado. No se opera hoy.")
+                if self.session_logger:
+                    self.session_logger.log_scan_summary(
+                        {"total_assets": len(getattr(Config, "ASSETS", [])),
+                         "signals_found": len(valid_analyses),
+                         "trades_executed": 0}
+                    )
+                return
+
+            total_capital = min(total_capital, daily_available)
+            logger.info("Capital total ajustado por límite diario: €%.2f", total_capital)
+
+        # 7) Distribución de capital
+        distribution = self._distribute_capital(valid_analyses, total_capital, len(valid_analyses))
+        logger.info("📊 DISTRIBUCIÓN: %s", ", ".join(f"{k}: €{v:.2f}" for k, v in distribution.items()))
+
+        # 8) Límites de margen
         margin_used = self.position_manager.calculate_margin_used(self.account_info)
-        total_limit = balance * Config.MAX_CAPITAL_RISK
+        total_limit = balance * getattr(Config, "MAX_CAPITAL_RISK", 1.0)
         remaining_margin = max(total_limit - margin_used, 0.0)
-        
-        logger.info(f"\n🧮 ESTADO DE MARGEN:")
-        logger.info(f"   Margen usado: €{margin_used:.2f}")
-        logger.info(f"   Límite total: €{total_limit:.2f} ({Config.MAX_CAPITAL_RISK*100:.0f}% del balance)")
-        logger.info(f"   Margen disponible: €{remaining_margin:.2f}")
-        
-        plans = self._plan_trades_distributed(
-            valid_analyses, 
-            capital_distribution, 
-            balance,
-            remaining_margin
-        )
-        
+        logger.info("🧮 MARGEN | usado: €%.2f | límite: €%.2f | disponible: €%.2f",
+                    margin_used, total_limit, remaining_margin)
+
+        # 9) Planificación
+        plans = self._plan_trades_distributed(valid_analyses, distribution, balance, remaining_margin)
         if not plans:
-            logger.info("\nℹ️  No hay operaciones viables tras aplicar límites")
-            
-            # Log resumen
+            logger.info("No hay operaciones viables tras aplicar límites.")
             if self.session_logger:
-                self.session_logger.log_scan_summary({
-                    'total_assets': len(Config.ASSETS),
-                    'signals_found': len(valid_analyses),
-                    'trades_executed': 0,
-                    'margin_used': margin_used
-                })
-            
+                self.session_logger.log_scan_summary(
+                    {"total_assets": len(getattr(Config, "ASSETS", [])),
+                     "signals_found": len(valid_analyses),
+                     "trades_executed": 0,
+                     "margin_used": margin_used}
+                )
             return
-        
-        # PASO 5: Ejecutar operaciones
+
+        # 10) Ejecución
         executed = self._execute_trades(plans, margin_used, total_limit)
-        
-        # Log resumen final
+
+        # 11) Resumen de escaneo
         if self.session_logger:
-            self.session_logger.log_scan_summary({
-                'total_assets': len(Config.ASSETS),
-                'signals_found': len(valid_analyses),
-                'trades_executed': executed,
-                'margin_used': margin_used + sum(p['margin_est'] for p in plans[:executed])
-            })
-    
+            self.session_logger.log_scan_summary(
+                {
+                    "total_assets": len(getattr(Config, "ASSETS", [])),
+                    "signals_found": len(valid_analyses),
+                    "trades_executed": executed,
+                    "margin_used": margin_used + sum(p.get("margin_est", 0.0) for p in plans[:executed]),
+                }
+            )
+
+    # -------------------------- PRIVADO --------------------------
+
     def _analyze_markets(self) -> List[Dict]:
-        """Analiza TODOS los mercados y guarda señales en BD"""
-        analyses = []
-        
-        logger.info("\n" + "="*80)
-        logger.info("📊 ANÁLISIS DE MERCADOS")
-        logger.info("="*80)
-        logger.info(f"Activos a analizar: {', '.join(Config.ASSETS)}")
-        logger.info(f"Timeframe: {Config.TIMEFRAME}")
-        logger.info(f"Confianza mínima: {Config.MIN_CONFIDENCE:.0%}")
-        logger.info("-"*80)
-        
-        logger.info(f"{'#':<3} {'Asset':<10} {'Status':<15} {'Signal':<10} {'Conf':<8} {'ATR':<8} {'Reason'}")
-        logger.info("-"*80)
-        
-        for i, epic in enumerate(Config.ASSETS, 1):
+        """
+        Analiza todos los activos en Config.ASSETS usando IntradayStrategy.
+        Devuelve una lista de diccionarios de análisis (cada uno incluye al menos: epic, signal, confidence)
+        y registra cada señal en BD.
+        """
+        assets = list(getattr(Config, "ASSETS", []))
+        tf = getattr(Config, "TIMEFRAME", "15min")
+
+        analyses: List[Dict] = []
+
+        logger.info("-" * 80)
+        logger.info("📊 ANALIZANDO %d activos | TF=%s | min_conf=%.0f%%",
+                    len(assets), tf, getattr(Config, "MIN_CONFIDENCE", 0.0) * 100)
+        logger.info("-" * 80)
+
+        for epic in assets:
             try:
-                market_data = self.api.get_market_data(epic, Config.TIMEFRAME)
-                
-                if not market_data or 'prices' not in market_data or not market_data['prices']:
-                    logger.info(f"{i:<3} {epic:<10} {'❌ Sin datos':<15}")
+                market_data = self.api.get_market_data(epic, tf)
+                if not market_data or "prices" not in market_data or not market_data["prices"]:
+                    logger.info("%-10s ❌ Sin datos", epic)
                     continue
-                
-                df = pd.DataFrame(market_data['prices'])
-                
-                for col in ['closePrice', 'openPrice', 'highPrice', 'lowPrice']:
+
+                df = pd.DataFrame(market_data["prices"])
+
+                # Normalización de campos numéricos comunes
+                for col in ("closePrice", "openPrice", "highPrice", "lowPrice"):
                     if col in df.columns:
                         df[col] = df[col].apply(lambda x: safe_float(x))
-                
-                df['closePrice'] = pd.to_numeric(df['closePrice'], errors='coerce')
-                df = df.dropna(subset=['closePrice'])
-                
+
+                df["closePrice"] = pd.to_numeric(df.get("closePrice", pd.Series(dtype=float)), errors="coerce")
+                df = df.dropna(subset=["closePrice"])
+
                 if df.empty:
-                    logger.info(f"{i:<3} {epic:<10} {'❌ Datos vacíos':<15}")
+                    logger.info("%-10s ❌ Datos vacíos", epic)
                     continue
-                
+
                 analysis = self.strategy.analyze(df, epic)
-                
-                # Guardar señal en BD
+
+                # Persistir señal
                 try:
                     signal_id = self.db_manager.save_signal(analysis)
-                    if signal_id and analysis['signal'] in ['BUY', 'SELL']:
+                    if signal_id and analysis.get("signal") in {"BUY", "SELL"}:
                         self.signal_ids[epic] = signal_id
                 except Exception as e:
-                    logger.debug(f"Error guardando señal en BD: {e}")
-                
-                # Log en archivo de señales
-                if self.session_logger and analysis['signal'] in ['BUY', 'SELL']:
-                    self.session_logger.log_signal(analysis)
-                
-                # Formatear output
-                signal_text = analysis['signal']
-                conf_text = f"{analysis['confidence']:.0%}"
-                atr_text = f"{analysis.get('atr_percent', 0):.2f}%"
-                reason_text = analysis['reasons'][0] if analysis['reasons'] else ""
-                
-                status = "✅ Válida" if analysis['signal'] in ['BUY', 'SELL'] else "⚪ Neutral"
-                
-                logger.info(
-                    f"{i:<3} {epic:<10} {status:<15} {signal_text:<10} "
-                    f"{conf_text:<8} {atr_text:<8} {reason_text}"
-                )
-                
+                    logger.debug("No se pudo guardar señal en BD para %s: %s", epic, e)
+
+                # Log de señal
+                if self.session_logger and analysis.get("signal") in {"BUY", "SELL"}:
+                    try:
+                        self.session_logger.log_signal(analysis)
+                    except Exception as e:
+                        logger.debug("No se pudo loguear señal en archivo para %s: %s", epic, e)
+
                 analyses.append(analysis)
-                
+
             except Exception as e:
-                logger.error(f"{i:<3} {epic:<10} {'❌ Error':<15} | {str(e)}")
-        
-        logger.info("-"*80)
-        logger.info(f"Total señales encontradas: {len(analyses)}")
-        logger.info("="*80 + "\n")
-        
+                logger.exception("%-10s ❌ Error analizando: %s", epic, e)
+
+        logger.info("Total señales generadas: %d", len(analyses))
+        logger.info("-" * 80)
+
         return analyses
 
     def _distribute_capital(self, analyses: List[Dict], total_capital: float, num_ops: int) -> Dict[str, float]:
-        """Distribuye el capital total entre las operaciones"""
-        distribution = {}
-        
-        if Config.DISTRIBUTION_MODE == 'EQUAL':
-            per_operation = total_capital / num_ops
-            for analysis in analyses:
-                distribution[analysis['epic']] = per_operation
+        """
+        Devuelve un mapping epic -> capital asignado, según Config.DISTRIBUTION_MODE
+        """
+        mode = getattr(Config, "DISTRIBUTION_MODE", "EQUAL")
+        distribution: Dict[str, float] = {}
+
+        if num_ops <= 0 or total_capital <= 0:
+            return distribution
+
+        if mode == "EQUAL":
+            per_op = total_capital / num_ops
+            for a in analyses:
+                distribution[a.get("epic")] = per_op
         else:  # WEIGHTED
-            total_confidence = sum(a['confidence'] for a in analyses)
-            for analysis in analyses:
-                weight = analysis['confidence'] / total_confidence
-                distribution[analysis['epic']] = total_capital * weight
-        
+            total_conf = sum(a.get("confidence", 0.0) for a in analyses) or 1.0
+            for a in analyses:
+                w = a.get("confidence", 0.0) / total_conf
+                distribution[a.get("epic")] = total_capital * w
+
         return distribution
-    
+
     def _plan_trades_distributed(
-        self, 
-        analyses: List[Dict], 
+        self,
+        analyses: List[Dict],
         capital_distribution: Dict[str, float],
         balance: float,
-        remaining_margin: float
+        remaining_margin: float,
     ) -> List[Dict]:
-        """Planifica operaciones con capital distribuido"""
-        plans = []
-        margin_by_asset = self.position_manager.get_margin_by_asset()
-        asset_limit = balance * Config.MAX_MARGIN_PER_ASSET
-        
-        logger.info("\n" + "="*60)
+        """
+        Genera planes de trade considerando distribución de capital y límites.
+        Cada plan incluye: epic, direction, price, size, stop_loss, take_profit, margin_est, confidence, etc.
+        """
+        plans: List[Dict] = []
+        asset_limit = balance * getattr(Config, "MAX_MARGIN_PER_ASSET", 1.0)
+
+        logger.info("=" * 60)
         logger.info("📋 PLANIFICANDO OPERACIONES")
-        logger.info("="*60)
-        
-        for analysis in analyses:
-            epic = analysis['epic']
-            price = safe_float(analysis['current_price'])
-            direction = analysis['signal']
-            atr_pct = analysis.get('atr_percent', 0)
-            assigned_capital = capital_distribution.get(epic, 0)
-            
-            logger.info(f"\n🔍 {epic}:")
-            logger.info(f"   Precio: €{price:.2f}")
-            logger.info(f"   Dirección: {direction}")
-            logger.info(f"   Capital asignado: €{assigned_capital:.2f}")
-            
-            target_margin = assigned_capital * Config.SIZE_SAFETY_MARGIN
-            
-            size, details, margin_est = self.position_manager.calculate_position_size(
-                epic, price, target_margin
-            )
-            
-            logger.info(f"   Size calculado: {size}")
-            logger.info(f"   Margen estimado: €{margin_est:.2f}")
-            
-            asset_used = margin_by_asset.get(epic, 0.0)
-            total_for_asset = asset_used + margin_est
-            
-            logger.info(f"   Margen ya usado: €{asset_used:.2f}")
-            logger.info(f"   Total si ejecuta: €{total_for_asset:.2f}")
-            logger.info(f"   Límite por activo: €{asset_limit:.2f}")
-            
+        logger.info("=" * 60)
+
+        try:
+            margin_by_asset = self.position_manager.get_margin_by_asset()
+        except Exception:
+            margin_by_asset = {}
+
+        for a in analyses:
+            epic = a.get("epic")
+            direction = a.get("signal")
+            price = safe_float(a.get("current_price"))
+            atr_pct = a.get("atr_percent", 0.0)
+            assigned_capital = capital_distribution.get(epic, 0.0)
+
+            logger.info("\n🔍 %s | Precio=€%.2f | Dir=%s | Capital=€%.2f",
+                        epic, price, direction, assigned_capital)
+
+            target_margin = assigned_capital * getattr(Config, "SIZE_SAFETY_MARGIN", 1.0)
+
+            size, details, margin_est = self.position_manager.calculate_position_size(epic, price, target_margin)
+            logger.info("   Size=%s | Margen estimado=€%.2f", size, margin_est)
+
+            # Límite por activo
+            used_for_asset = margin_by_asset.get(epic, 0.0)
+            total_for_asset = used_for_asset + margin_est
+            logger.info("   Margen usado asset=€%.2f | total si ejecuta=€%.2f | límite por activo=€%.2f",
+                        used_for_asset, total_for_asset, asset_limit)
+
             if total_for_asset > asset_limit:
-                logger.warning(f"   ⛔ RECHAZADA: Excede límite por activo")
+                logger.warning("   ⛔ RECHAZADA: excede límite por activo")
                 continue
-            
-            if margin_est > assigned_capital * 1.2:
-                logger.warning(
-                    f"   ⛔ RECHAZADA: Margen estimado (€{margin_est:.2f}) "
-                    f"excede capital asignado (€{assigned_capital:.2f}) en más del 20%"
-                )
+
+            # Coherencia con capital asignado
+            if assigned_capital > 0 and margin_est > assigned_capital * 1.2:
+                logger.warning("   ⛔ RECHAZADA: margen(€%.2f) > 120%% del capital asignado(€%.2f)",
+                               margin_est, assigned_capital)
                 continue
-            
-            # Calcular SL y TP
-            if Config.SL_TP_MODE == 'DYNAMIC' and atr_pct > 0:
+
+            # SL/TP
+            if getattr(Config, "SL_TP_MODE", "STATIC") == "DYNAMIC" and atr_pct > 0:
                 stop_loss = self.position_manager.calculate_stop_loss(price, direction, atr_pct)
                 take_profit = self.position_manager.calculate_take_profit(price, direction, atr_pct)
             else:
                 stop_loss = self.position_manager.calculate_stop_loss(price, direction)
                 take_profit = self.position_manager.calculate_take_profit(price, direction)
-            
+
             rr_ratio = self.position_manager.get_risk_reward_ratio(price, stop_loss, take_profit, direction)
-            
-            logger.info(f"   SL: €{stop_loss:.2f}")
-            logger.info(f"   TP: €{take_profit:.2f}")
-            logger.info(f"   R/R: {rr_ratio:.2f}")
-            logger.info(f"   ✅ ACEPTADA")
-            
-            plans.append({
-                'epic': epic,
-                'direction': direction,
-                'price': price,
-                'size': size,
-                'stop_loss': stop_loss,
-                'take_profit': take_profit,
-                'margin_est': margin_est,
-                'confidence': analysis['confidence'],
-                'reasons': analysis['reasons'],
-                'indicators': analysis['indicators'],
-                'atr_percent': atr_pct,
-                'rr_ratio': rr_ratio,
-                'assigned_capital': assigned_capital
-            })
-        
-        logger.info("\n" + "="*60)
-        logger.info(f"📊 RESULTADO: {len(plans)} operación(es) planificada(s)")
-        logger.info("="*60)
-        
+
+            logger.info("   SL=€%.2f | TP=€%.2f | R/R=%.2f | ✅ ACEPTADA", stop_loss, take_profit, rr_ratio)
+
+            plans.append(
+                {
+                    "epic": epic,
+                    "direction": direction,
+                    "price": price,
+                    "size": size,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "margin_est": margin_est,
+                    "confidence": a.get("confidence", 0.0),
+                    "reasons": a.get("reasons", []),
+                    "indicators": a.get("indicators", {}),
+                    "atr_percent": atr_pct,
+                    "rr_ratio": rr_ratio,
+                    "assigned_capital": assigned_capital,
+                }
+            )
+
+        logger.info("\n📊 %d operación(es) planificada(s)", len(plans))
         return plans
-    
+
     def _execute_trades(self, plans: List[Dict], margin_used: float, total_limit: float) -> int:
-        """Ejecuta las operaciones planificadas y las guarda en BD"""
+        """
+        Ejecuta planes de trading respetando el límite de margen total.
+        Guarda trades en BD, marca señales ejecutadas y anota en logs.
+        """
         if not plans:
-            logger.info("ℹ️  No hay planes de operaciones para ejecutar")
             return 0
-        
-        plans.sort(key=lambda x: x['confidence'], reverse=True)
-        
+
+        plans.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
+
         executed = 0
         current_margin = margin_used
-        
-        logger.info("\n" + "="*60)
+
+        logger.info("=" * 60)
         logger.info("💼 EJECUTANDO OPERACIONES")
-        logger.info("="*60)
-        logger.info(f"Margen actual: €{current_margin:.2f}")
-        logger.info(f"Límite total: €{total_limit:.2f}")
-        logger.info(f"Margen disponible: €{total_limit - current_margin:.2f}")
-        logger.info(f"Operaciones a ejecutar: {len(plans)}")
-        
-        for i, plan in enumerate(plans, 1):
-            logger.info("\n" + "-"*60)
-            logger.info(f"📋 ORDEN {i}/{len(plans)}")
-            logger.info("-"*60)
-            
-            new_total = current_margin + plan['margin_est']
-            
+        logger.info("=" * 60)
+        logger.info("Margen inicial=€%.2f | Límite total=€%.2f | Disponible=€%.2f",
+                    current_margin, total_limit, max(total_limit - current_margin, 0.0))
+        logger.info("Operaciones a intentar: %d", len(plans))
+
+        for i, p in enumerate(plans, 1):
+            new_total = current_margin + p.get("margin_est", 0.0)
+            logger.info("\n📋 ORDEN %d/%d | %s %s", i, len(plans), p.get("direction"), p.get("epic"))
+
             if new_total > total_limit:
-                logger.warning(
-                    f"⛔ SALTADA {plan['epic']}: Límite total excedido\n"
-                    f"   Margen actual: €{current_margin:.2f}\n"
-                    f"   + Nuevo margen: €{plan['margin_est']:.2f}\n"
-                    f"   = Total: €{new_total:.2f} > Límite: €{total_limit:.2f}"
-                )
+                logger.warning("⛔ SALTADA: nuevo total(€%.2f) > límite(€%.2f)", new_total, total_limit)
                 continue
-            
-            # Preparar orden
+
+            # Reserva de capital diario
+            if getattr(Config, "ENABLE_DAILY_CAPITAL_LIMIT", False):
+                ok = self.capital_tracker.allocate_capital(  # type: ignore[attr-defined]
+                    p.get("margin_est", 0.0),
+                    p.get("epic"),
+                    p.get("confidence", 0.0),
+                )
+                if not ok:
+                    logger.warning("⛔ Capital diario insuficiente para %s", p.get("epic"))
+                    continue
+
             order_data = {
-                'epic': plan['epic'],
-                'direction': plan['direction'],
-                'size': plan['size'],
-                'guaranteedStop': False,
-                'stopLevel': plan['stop_loss'],
-                'profitLevel': plan['take_profit']
+                "epic": p.get("epic"),
+                "direction": p.get("direction"),
+                "size": p.get("size"),
+                "guaranteedStop": False,
+                "stopLevel": p.get("stop_loss"),
+                "profitLevel": p.get("take_profit"),
             }
-            
-            # Log detallado
-            logger.info(f"📤 {plan['direction']} {plan['epic']}")
-            logger.info(f"   Precio entrada: €{plan['price']:.2f}")
-            logger.info(f"   Tamaño: {plan['size']} unidades")
-            logger.info(f"   Stop Loss: €{plan['stop_loss']:.2f}")
-            logger.info(f"   Take Profit: €{plan['take_profit']:.2f}")
-            logger.info(f"   Margen estimado: €{plan['margin_est']:.2f}")
-            logger.info(f"   Confianza: {plan['confidence']:.0%}")
-            
-            if plan.get('atr_percent'):
-                logger.info(f"   ATR: {plan['atr_percent']:.2f}%")
-            if plan.get('rr_ratio'):
-                logger.info(f"   Ratio R/R: {plan['rr_ratio']:.2f}")
-            
-            logger.info(f"   Razones: {', '.join(plan['reasons'][:3])}")
-            
-            # Ejecutar orden
+
+            logger.info(
+                "   Entrada: €%.2f | Size: %s | SL: €%.2f | TP: €%.2f | margen: €%.2f | conf: %.0f%%",
+                p.get("price"),
+                p.get("size"),
+                p.get("stop_loss"),
+                p.get("take_profit"),
+                p.get("margin_est"),
+                p.get("confidence", 0.0) * 100,
+            )
+
             logger.info("   ⏳ Enviando orden a la API...")
             result = self.api.place_order(order_data)
-            
+
             if result:
-                deal_ref = result.get('dealReference', 'n/a')
-                logger.info(f"   ✅ EJECUTADA - Deal ID: {deal_ref}")
-                
-                # Guardar trade en BD
+                deal_ref = result.get("dealReference", "n/a")
+                logger.info("   ✅ EJECUTADA | DealRef=%s", deal_ref)
+
+                # Persistencia del trade
                 try:
                     trade_data = {
-                        'signal_id': self.signal_ids.get(plan['epic']),
-                        'deal_reference': deal_ref,
-                        'epic': plan['epic'],
-                        'direction': plan['direction'],
-                        'entry_price': plan['price'],
-                        'size': plan['size'],
-                        'stop_loss': plan['stop_loss'],
-                        'take_profit': plan['take_profit'],
-                        'margin_est': plan['margin_est'],
-                        'confidence': plan['confidence'],
-                        'sl_tp_mode': Config.SL_TP_MODE,
-                        'atr_percent': plan.get('atr_percent'),
-                        'reasons': plan['reasons']
+                        "signal_id": self.signal_ids.get(p.get("epic")),
+                        "deal_reference": deal_ref,
+                        "epic": p.get("epic"),
+                        "direction": p.get("direction"),
+                        "entry_price": p.get("price"),
+                        "size": p.get("size"),
+                        "stop_loss": p.get("stop_loss"),
+                        "take_profit": p.get("take_profit"),
+                        "margin_est": p.get("margin_est"),
+                        "confidence": p.get("confidence"),
+                        "sl_tp_mode": getattr(Config, "SL_TP_MODE", "STATIC"),
+                        "atr_percent": p.get("atr_percent"),
+                        "reasons": p.get("reasons"),
                     }
-                    
+
                     trade_id = self.db_manager.save_trade_open(trade_data)
-                    
-                    if trade_id and self.signal_ids.get(plan['epic']):
-                        self.db_manager.mark_signal_executed(
-                            self.signal_ids[plan['epic']], 
-                            trade_id
-                        )
-                    
-                    logger.info(f"   💾 Trade guardado en BD - ID: {trade_id}")
-                    
-                    # Log en archivo de trades
+
+                    if trade_id and self.signal_ids.get(p.get("epic")):
+                        try:
+                            self.db_manager.mark_signal_executed(self.signal_ids[p.get("epic")], trade_id)
+                        except Exception:
+                            pass
+
+                    logger.info("   💾 Trade guardado en BD | id=%s", trade_id)
+
                     if self.session_logger:
                         self.session_logger.log_trade_open(trade_data)
-                
+
                 except Exception as e:
-                    logger.error(f"   ⚠️  Error guardando trade en BD: {e}")
-                
-                current_margin += plan['margin_est']
+                    logger.error("   ⚠️  Error guardando trade en BD: %s", e)
+
+                # Actualizar márgenes
+                current_margin = new_total
                 executed += 1
+
             else:
-                logger.error(f"   ❌ ERROR en la ejecución")
-            
+                logger.error("   ❌ ERROR al ejecutar orden en API.")
+
             time.sleep(1)
-        
+
         # Resumen final
-        logger.info("\n" + "="*60)
+        logger.info("=" * 60)
         logger.info("📊 RESUMEN DE EJECUCIÓN")
-        logger.info("="*60)
-        logger.info(f"✅ Ejecutadas: {executed}/{len(plans)} orden(es)")
-        logger.info(f"💰 Margen usado inicialmente: €{margin_used:.2f}")
-        logger.info(f"💰 Margen tras ejecuciones: €{current_margin:.2f}")
-        logger.info(f"📈 Margen añadido: €{current_margin - margin_used:.2f}")
-        logger.info(f"🎯 Margen disponible restante: €{total_limit - current_margin:.2f}")
-        logger.info(f"📊 Utilización: {(current_margin/total_limit)*100:.1f}%")
-        logger.info("="*60 + "\n")
-        
+        logger.info("=" * 60)
+        logger.info("✅ Ejecutadas: %d/%d", executed, len(plans))
+        logger.info("💰 Margen inicial: €%.2f | final: €%.2f | Δ: €%.2f | restante: €%.2f",
+                    margin_used,
+                    current_margin,
+                    current_margin - margin_used,
+                    max(total_limit - current_margin, 0.0),
+                    )
+        if getattr(Config, "ENABLE_DAILY_CAPITAL_LIMIT", False):
+            try:
+                self.capital_tracker.log_daily_usage()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
         return executed
-    
+
+    # ----------------------- UTILIDADES -----------------------
+
     def is_trading_hours(self) -> bool:
-        """Verifica si estamos en horario de trading"""
+        """
+        Devuelve True si estamos dentro del horario de trading configurado.
+        (Lunes-Viernes y horas [START_HOUR, END_HOUR))
+        """
         now = datetime.now()
-        if now.weekday() >= 5:
+        if now.weekday() >= 5:  # sábado (5) o domingo (6)
             return False
-        return Config.START_HOUR <= now.hour < Config.END_HOUR
-    
-    def _log_account_status(self):
-        """Log del estado de la cuenta"""
-        balance, available = self.position_manager.get_account_balance(self.account_info)
-        logger.info(f"💼 Balance: €{balance:.2f} | Disponible: €{available:.2f}")
-    
-    def _get_config_snapshot(self) -> dict:
-        """Obtiene snapshot de la configuración actual"""
+        start_h = getattr(Config, "START_HOUR", 8)
+        end_h = getattr(Config, "END_HOUR", 22)
+        return start_h <= now.hour < end_h
+
+    def _log_account_status(self) -> None:
+        """Loguea el estado de la cuenta actual."""
+        try:
+            balance, available = self.position_manager.get_account_balance(self.account_info)
+            logger.info("💼 Balance: €%.2f | Disponible: €%.2f", balance, available)
+        except Exception as e:
+            logger.debug("No se pudo loguear estado de cuenta: %s", e)
+
+    def _get_config_snapshot(self) -> Dict:
+        """Snapshot serializable de la configuración actual."""
         return {
-            'assets': Config.ASSETS,
-            'max_positions': Config.MAX_POSITIONS,
-            'capital_mode': Config.CAPITAL_MODE,
-            'max_capital_percent': Config.MAX_CAPITAL_PERCENT,
-            'max_capital_fixed': Config.MAX_CAPITAL_FIXED,
-            'sl_tp_mode': Config.SL_TP_MODE,
-            'timeframe': Config.TIMEFRAME,
-            'enable_mtf': Config.ENABLE_MTF,
-            'enable_adx_filter': Config.ENABLE_ADX_FILTER,
-            'min_confidence': Config.MIN_CONFIDENCE,
-            'circuit_breaker': {
-                'enabled': Config.ENABLE_CIRCUIT_BREAKER,
-                'max_daily_loss': Config.MAX_DAILY_LOSS_PERCENT,
-                'max_weekly_loss': Config.MAX_WEEKLY_LOSS_PERCENT,
-                'max_consecutive_losses': Config.MAX_CONSECUTIVE_LOSSES,
-                'max_drawdown': Config.MAX_TOTAL_DRAWDOWN_PERCENT
-            }
+            "assets": getattr(Config, "ASSETS", []),
+            "max_positions": getattr(Config, "MAX_POSITIONS", 1),
+            "capital_mode": getattr(Config, "CAPITAL_MODE", "PERCENTAGE"),
+            "max_capital_percent": getattr(Config, "MAX_CAPITAL_PERCENT", 100.0),
+            "max_capital_fixed": getattr(Config, "MAX_CAPITAL_FIXED", 0.0),
+            "sl_tp_mode": getattr(Config, "SL_TP_MODE", "STATIC"),
+            "timeframe": getattr(Config, "TIMEFRAME", "15min"),
+            "enable_mtf": getattr(Config, "ENABLE_MTF", False),
+            "enable_adx_filter": getattr(Config, "ENABLE_ADX_FILTER", False),
+            "min_confidence": getattr(Config, "MIN_CONFIDENCE", 0.0),
+            "scan_interval": getattr(Config, "SCAN_INTERVAL", 60),
+            "circuit_breaker": {
+                "enabled": getattr(Config, "ENABLE_CIRCUIT_BREAKER", True),
+                "max_daily_loss": getattr(Config, "MAX_DAILY_LOSS_PERCENT", 0.0),
+                "max_weekly_loss": getattr(Config, "MAX_WEEKLY_LOSS_PERCENT", 0.0),
+                "max_consecutive_losses": getattr(Config, "MAX_CONSECUTIVE_LOSSES", 0),
+                "max_drawdown": getattr(Config, "MAX_TOTAL_DRAWDOWN_PERCENT", 0.0),
+            },
+            "capital_tracker": {
+                "enabled": getattr(Config, "ENABLE_DAILY_CAPITAL_LIMIT", False),
+                "trading_days_per_week": getattr(Config, "TRADING_DAYS_PER_WEEK", 5),
+            },
         }
-    
-    def _save_account_snapshot(self):
-        """Guarda snapshot del estado de la cuenta"""
+
+    def _save_account_snapshot(self) -> None:
+        """
+        Guarda snapshot de la cuenta en BD si hay sesión activa.
+        Se tolera fallo silencioso para no interrumpir el loop.
+        """
         try:
             if not self.db_manager.has_active_session():
                 return
-            
+
             balance, available = self.position_manager.get_account_balance(self.account_info)
-            open_positions = len(self.position_manager.get_positions())
-            
-            self.db_manager.save_account_snapshot({
-                'balance': balance,
-                'available': available,
-                'open_positions': open_positions
-            })
-            
-            # Log en archivo también
+            open_positions = 0
+            try:
+                pos = self.api.get_positions()
+                open_positions = len(pos) if pos else 0
+            except Exception:
+                pass
+
+            snap = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "balance": balance,
+                "available": available,
+                "open_positions": open_positions,
+            }
+            self.db_manager.save_account_snapshot(snap)
+
             if self.session_logger:
-                self.session_logger.log_account_snapshot({
-                    'balance': balance,
-                    'available': available,
-                    'open_positions': open_positions
-                })
+                self.session_logger.log_account_snapshot(snap)
+
         except Exception as e:
-            logger.debug(f"Error guardando snapshot: {e}")
-    
-    def stop(self):
-        """Detiene el bot"""
-        logger.info("🛑 Deteniendo bot...")
-        self.is_running = False
-        self.controller.stop_bot()
-        
-        # Finalizar sesión en BD
-        try:
-            if self.db_manager.has_active_session():
-                balance, _ = self.position_manager.get_account_balance(self.account_info)
-                self.db_manager.end_session(balance)
-                logger.info("📊 Sesión de BD finalizada")
-        except Exception as e:
-            logger.error(f"Error finalizando sesión BD: {e}")
-        
-        # Cerrar logger de sesión
-        if self.session_logger:
-            self.session_logger.close()
-        
-        self.api.close_session()
-        logger.info("✅ Bot detenido correctamente")
+            logger.debug("No se pudo guardar snapshot de cuenta: %s", e)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    bot = TradingBot()
+    try:
+        bot.run()
+    except KeyboardInterrupt:
+        bot.stop()
+        logger.info("Bot detenido por teclado.")
