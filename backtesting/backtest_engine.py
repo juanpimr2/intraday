@@ -1,16 +1,18 @@
 # backtesting/backtest_engine.py
 """
 Motor de Backtesting UNIFICADO con:
-- Asignación de capital diaria priorizada por confianza (utils.CapitalTracker).
+- Asignación de capital diaria (utils.CapitalTracker).
 - Costes reales (comisiones + spread) vía utils.apply_costs.
-- Timestamps de barra reales en UTC para entradas/salidas y equity.
-- Detección de régimen de mercado (trending/lateral) por activo (utils.detect_regime).
+- Timestamps UTC correctos (normalización segura).
+- Detección de régimen (utils.detect_regime) y filtro opcional.
 - Métricas y análisis segmentados por régimen y por sesión (EU/US).
 - Export por defecto dentro de reports/run_<ts>/.
 
-FIX importante:
-- Evitar pasar `tz='UTC'` a un Timestamp que ya viene con tzinfo. Se usa `_to_utc()` para normalizar:
-  tz_localize('UTC') si naive, o tz_convert('UTC') si tz-aware.
+Fixes recientes:
+- (_temporal_analysis) Arreglado error de tz: no pasar tz= a Timestamp tz-aware.
+- (export_results_to_csv) Siempre crea el archivo, incluso sin trades (CSV vacío con cabeceras).
+- (_get_signals_for_date) Permite señales con pocas barras (útil para smoke tests).
+- (_resolve_out_path) Si el filename incluye ruta (relativa/absoluta), se respeta esa ruta EXACTA.
 """
 from __future__ import annotations
 
@@ -46,7 +48,6 @@ def _to_utc(ts: Union[pd.Timestamp, datetime]) -> pd.Timestamp:
 # --------------------------------------------------------------------------------------
 @dataclass
 class Trade:
-    """Representa un trade completo."""
     epic: str
     direction: str
     entry_date: Union[datetime, pd.Timestamp]
@@ -71,53 +72,44 @@ class Trade:
 
 @dataclass
 class BacktestResults:
-    """Resultados completos del backtest."""
-    # Capital
     initial_capital: float
     final_capital: float
     total_return: float
     total_return_percent: float
     cagr: float
 
-    # Trades
     trades: List[Trade] = field(default_factory=list)
     total_trades: int = 0
     winning_trades: int = 0
     losing_trades: int = 0
     win_rate: float = 0.0
 
-    # P&L
     avg_win: float = 0.0
     avg_loss: float = 0.0
     largest_win: float = 0.0
     largest_loss: float = 0.0
     profit_factor: float = 0.0
 
-    # Drawdown
-    max_drawdown: float = 0.0  # %
-    avg_drawdown: float = 0.0  # %
+    max_drawdown: float = 0.0
+    avg_drawdown: float = 0.0
     max_drawdown_duration_days: int = 0
     recovery_time_days: int = 0
 
-    # Riesgo
     sharpe_ratio: float = 0.0
     sortino_ratio: float = 0.0
     calmar_ratio: float = 0.0
     mar_ratio: float = 0.0
-    volatility: float = 0.0  # % anualizada
+    volatility: float = 0.0
 
-    # Rachas
     max_consecutive_wins: int = 0
     max_consecutive_losses: int = 0
 
-    # Análisis temporal y régimen
     performance_by_day: Dict[str, Dict] = field(default_factory=dict)
     performance_by_hour: Dict[int, Dict] = field(default_factory=dict)
     performance_by_month: Dict[str, Dict] = field(default_factory=dict)
     performance_by_regime: Dict[str, Dict] = field(default_factory=dict)
-    performance_by_session: Dict[str, Dict] = field(default_factory=dict)  # NUEVO
+    performance_by_session: Dict[str, Dict] = field(default_factory=dict)
 
-    # Series
     equity_curve: List[Dict] = field(default_factory=list)
     daily_returns: List[float] = field(default_factory=list)
 
@@ -141,13 +133,10 @@ class BacktestResults:
             'equity_curve': self.equity_curve,
             'trades_detail': [t.__dict__ for t in self.trades],
             'performance_by_regime': self.performance_by_regime,
-            'performance_by_session': self.performance_by_session,  # NUEVO
+            'performance_by_session': self.performance_by_session,
         }
 
 
-# --------------------------------------------------------------------------------------
-# Motor unificado
-# --------------------------------------------------------------------------------------
 class BacktestEngine:
     """Motor de backtesting con CapitalTracker, costes, tiempos UTC y régimen."""
 
@@ -159,13 +148,11 @@ class BacktestEngine:
         self.trades: List[Trade] = []
         self.equity_curve: List[Dict] = []
 
-        # Data y utilidades de la corrida
         self._historical_data: Dict[str, pd.DataFrame] = {}
-        self._regimes_map: Dict[str, Dict[pd.Timestamp, str]] = {}  # epic -> {timestamp->regime}
+        self._regimes_map: Dict[str, Dict[pd.Timestamp, str]] = {}
         self._last_costs_df: Optional[pd.DataFrame] = None
-        self.report_dir: Optional[Path] = None  # reports/run_<ts>/
+        self.report_dir: Optional[Path] = None
 
-        # Asignación (Config con defaults)
         self.use_capital_tracker = bool(getattr(Config, "USE_CAPITAL_TRACKER", True))
         self.capital_tracker = CapitalTracker(
             initial_equity=self.initial_capital,
@@ -173,29 +160,24 @@ class BacktestEngine:
             per_trade_cap_pct=float(getattr(Config, "PER_TRADE_CAP_PCT", 0.03)),
         )
 
-        # Legacy fallback
         self.legacy_target_pct = float(getattr(Config, "TARGET_PERCENT_OF_AVAILABLE", 0.40))
         self.max_positions = int(getattr(Config, "MAX_POSITIONS", 3))
         self.min_confidence = float(getattr(Config, "MIN_CONFIDENCE", 0.5))
 
-        # SL/TP
         self.sl_buy = float(getattr(Config, "STOP_LOSS_PERCENT_BUY", 0.01))
         self.tp_buy = float(getattr(Config, "TAKE_PROFIT_PERCENT_BUY", 0.02))
         self.sl_sell = float(getattr(Config, "STOP_LOSS_PERCENT_SELL", 0.01))
         self.tp_sell = float(getattr(Config, "TAKE_PROFIT_PERCENT_SELL", 0.02))
 
-        # Filtro de régimen (NUEVO)
         self.regime_filter_enabled = bool(getattr(Config, "REGIME_FILTER_ENABLED", True))
         self.regime_filter_block: str = str(getattr(Config, "REGIME_FILTER_BLOCK", "lateral")).lower()
 
-    # -------------------------------- API pública --------------------------------
     def run(
         self,
         historical_data: Dict[str, pd.DataFrame],
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
     ) -> BacktestResults:
-        """Ejecuta el backtest bar-by-bar con fechas y horas reales (UTC)."""
         logger.info("=" * 80)
         logger.info(" BACKTESTING (motor unificado + capital tracker)")
         logger.info("=" * 80)
@@ -206,12 +188,10 @@ class BacktestEngine:
             f"per_trade={self.capital_tracker.per_trade_cap_pct*100:.1f}%)"
         )
 
-        # Report dir bajo reports/
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.report_dir = Path("reports") / f"run_{ts}"
         self.report_dir.mkdir(parents=True, exist_ok=True)
 
-        # Reset de estado
         self.capital = self.initial_capital
         self.trades = []
         self.equity_curve = []
@@ -219,15 +199,12 @@ class BacktestEngine:
         self._historical_data = {}
         self._regimes_map = {}
 
-        # Normalizar/guardar data input y detectar regímenes por activo
         if not historical_data:
             logger.error("❌ No hay datos históricos")
             return self._create_empty_results()
 
         for epic, df in historical_data.items():
             df = df.copy()
-
-            # Normalización columnas y tiempos
             if "snapshotTime" in df.columns:
                 df["snapshotTime"] = pd.to_datetime(df["snapshotTime"], utc=True, errors="coerce")
             elif "timestamp" in df.columns:
@@ -235,7 +212,6 @@ class BacktestEngine:
             else:
                 raise ValueError(f"{epic}: falta columna de tiempo (snapshotTime/timestamp)")
 
-            # Columnas OHLC
             rename_map = {}
             if "close" in df.columns and "closePrice" not in df.columns:
                 rename_map["close"] = "closePrice"
@@ -248,7 +224,6 @@ class BacktestEngine:
             if rename_map:
                 df = df.rename(columns=rename_map)
 
-            # Tipos numéricos
             for col in ["closePrice", "openPrice", "highPrice", "lowPrice", "volume"]:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col].apply(lambda x: safe_float(x)), errors="coerce")
@@ -259,7 +234,6 @@ class BacktestEngine:
                 .reset_index(drop=True)
             )
 
-            # Día (para loops) y mapa de régimen por timestamp
             df["date"] = df["snapshotTime"].dt.date
             regimes = detect_regime(
                 df,
@@ -270,7 +244,6 @@ class BacktestEngine:
             self._regimes_map[epic] = dict(zip(df["snapshotTime"], regimes))
             self._historical_data[epic] = df
 
-        # Rango de días (no horas) para la iteración
         all_dates = self._extract_dates(self._historical_data, start_date, end_date)
         if not all_dates:
             logger.error("❌ No hay fechas válidas en el rango dado")
@@ -286,13 +259,10 @@ class BacktestEngine:
             if i % max(len(all_dates) // 10, 1) == 0:
                 logger.info(f"⏳ Progreso: {(i / len(all_dates)) * 100:4.0f}%")
 
-            # 1) Actualizar posiciones con última barra del día (timestamp real UTC)
             open_positions = self._update_positions(open_positions, curr_date)
 
-            # 2) Señales (no look-ahead) [con filtro de régimen opcional]
             signals = self._get_signals_for_date(curr_date)
 
-            # 3) Aperturas (tracker o legacy), usando el timestamp de la última barra del activo ese día
             if self.use_capital_tracker and signals:
                 allocations = self.capital_tracker.allocate_for_signals(
                     equity=self.capital,
@@ -329,7 +299,6 @@ class BacktestEngine:
                         if position:
                             open_positions.append(position)
 
-            # 4) Equity del día en timestamp de referencia (última barra del día del primer activo)
             ref_ts = self._reference_timestamp(curr_date)
             equity = self._calculate_equity(open_positions)
             self.equity_curve.append({
@@ -339,13 +308,11 @@ class BacktestEngine:
                 'open_positions': len(open_positions),
             })
 
-        # Cierre final
         logger.info(f"\n Cerrando {len(open_positions)} posiciones al finalizar...")
         last_ref = self._reference_timestamp(all_dates[-1]) or _to_utc(pd.Timestamp(all_dates[-1]))
         for p in open_positions:
             self._close_position(p, p['current_price'], last_ref, 'END_OF_BACKTEST')
 
-        # Costes reales (antes de métricas)
         if self.trades:
             logger.info(" Aplicando costes reales (comisiones + spread)...")
             df_trades = pd.DataFrame([t.__dict__ for t in self.trades])
@@ -362,7 +329,6 @@ class BacktestEngine:
                     t.pnl_percent = float(df_trades_net.loc[i, "pnl_percent_net"])
             self._last_costs_df = df_trades_net.copy()
 
-        # Métricas
         logger.info("\n Calculando métricas...")
         results = self._calculate_advanced_results()
         return results
@@ -388,12 +354,10 @@ class BacktestEngine:
         day_data = df[df["snapshotTime"].dt.date == date_]
         if day_data.empty:
             return None
-        # FIX: normalizar con _to_utc
         val = pd.Timestamp(day_data.iloc[-1]["snapshotTime"])
         return _to_utc(val)
 
     def _reference_timestamp(self, date_) -> Optional[pd.Timestamp]:
-        # Usa el primer activo disponible para tomar el timestamp de equity del día
         for epic in self._historical_data:
             ts = self._last_bar_timestamp(epic, date_)
             if ts is not None:
@@ -401,14 +365,16 @@ class BacktestEngine:
         return None
 
     def _get_signals_for_date(self, date_) -> List[Dict]:
-        """Obtiene señales a cierre del día (no look-ahead), aplicando filtro de régimen si está activo."""
+        """
+        Obtiene señales a cierre del día (no look-ahead), aplicando filtro de régimen si está activo.
+        Permite señales con pocas barras; deja que la estrategia decida si procede.
+        """
         signals: List[Dict] = []
         for epic, df in self._historical_data.items():
             subset = df[df["snapshotTime"].dt.date <= date_]
-            if len(subset) < getattr(Config, "SMA_LONG", 50):
+            if len(subset) < 2:
                 continue
 
-            # Filtro de régimen (usando la última barra del día para ese epic)
             if self.regime_filter_enabled:
                 ts_day = self._last_bar_timestamp(epic, date_)
                 regime_here = self._lookup_regime(epic, ts_day) if ts_day is not None else "lateral"
@@ -416,7 +382,7 @@ class BacktestEngine:
                     logger.debug(f"⛔ Régimen '{regime_here}' en {epic} {date_} → se omite señal")
                     continue
 
-            analysis = self.strategy.analyze(subset.copy(), epic)  # {'epic','signal','confidence','current_price',...}
+            analysis = self.strategy.analyze(subset.copy(), epic)
             signals.append(analysis)
         return signals
 
@@ -441,7 +407,7 @@ class BacktestEngine:
             'epic': signal['epic'],
             'direction': direction,
             'entry_price': price,
-            'entry_date': _to_utc(ts),  # timestamp real UTC
+            'entry_date': _to_utc(ts),
             'units': units,
             'position_size': position_size,
             'stop_loss': stop_loss,
@@ -643,7 +609,6 @@ class BacktestEngine:
         total_wins = sum(t.pnl for t in winners)
         total_losses = abs(sum(t.pnl for t in losers))
 
-        # Rachas
         max_w, max_l = 0, 0
         cur_w, cur_l = 0, 0
         for t in self.trades:
@@ -667,20 +632,15 @@ class BacktestEngine:
         }
 
     def _temporal_analysis(self) -> Dict:
-        """Incluye:
-        - performance_by_day (weekday)
-        - performance_by_hour (buckets legacy)
-        - performance_by_session (NUEVO: EU/US en horario Europe/Madrid)
-        """
+        """Análisis por día, buckets legacy y sesiones EU/US en Europe/Madrid."""
         if not self.trades:
             return {
                 'performance_by_day': {},
                 'performance_by_hour': {},
                 'performance_by_month': {},
-                'performance_by_session': {},  # NUEVO
+                'performance_by_session': {},
             }
 
-        # Día de la semana
         by_day: Dict[str, Dict] = {}
         for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']:
             dtrades = [t for t in self.trades if t.day_of_week == day]
@@ -693,7 +653,6 @@ class BacktestEngine:
                     'avg_pnl': float(np.mean([t.pnl for t in dtrades])),
                 }
 
-        # Buckets legacy por hora UTC (se mantiene por compatibilidad)
         buckets = {'morning': [], 'afternoon': [], 'evening': []}
         for t in self.trades:
             if 7 <= t.hour_of_day < 12:
@@ -714,25 +673,20 @@ class BacktestEngine:
                     'avg_pnl': float(np.mean([t.pnl for t in lst])),
                 }
 
-        # -------------------------------
-        # NUEVO: Sesiones EU/US (CET/CEST)
-        # -------------------------------
-        # Definición (Europe/Madrid):
-        #   eu_open: 08:00–12:00
-        #   eu_pm  : 12:00–16:00 (nota: 15:30–18:00 será us_open, ver prioridad)
-        #   us_open: 15:30–18:00
-        #   us_pm  : 18:00–22:00
-        #
-        # Si hay solape (15:30–16:00), se asigna PRIORIDAD a us_open.
+        # ---- Sesiones EU/US (Europe/Madrid) ----
         sessions = {'eu_open': [], 'eu_pm': [], 'us_open': [], 'us_pm': []}
         tz_madrid = "Europe/Madrid"
 
         for t in self.trades:
-            # Convertimos la hora de salida a horario de Madrid
-            ts = pd.Timestamp(t.exit_date, tz='UTC').tz_convert(tz_madrid)
-            hm = ts.hour + ts.minute / 60.0
+            ts = pd.Timestamp(t.exit_date)
+            if ts.tzinfo is None:
+                ts_utc = ts.tz_localize("UTC")
+            else:
+                ts_utc = ts.tz_convert("UTC")
+            ts_local = ts_utc.tz_convert(tz_madrid)
 
-            # Prioridad: us_open primero
+            hm = ts_local.hour + ts_local.minute / 60.0
+
             if 15.5 <= hm < 18.0:
                 sessions['us_open'].append(t)
             elif 8.0 <= hm < 12.0:
@@ -741,7 +695,6 @@ class BacktestEngine:
                 sessions['eu_pm'].append(t)
             elif 18.0 <= hm < 22.0:
                 sessions['us_pm'].append(t)
-            # fuera de sesión -> sin asignar (quedará fuera del resumen por sesión)
 
         by_session: Dict[str, Dict] = {}
         for name, lst in sessions.items():
@@ -760,8 +713,8 @@ class BacktestEngine:
         return {
             'performance_by_day': by_day,
             'performance_by_hour': by_hour,
-            'performance_by_month': {},  # placeholder
-            'performance_by_session': by_session,  # NUEVO
+            'performance_by_month': {},
+            'performance_by_session': by_session,
         }
 
     def _regime_analysis(self) -> Dict:
@@ -795,33 +748,50 @@ class BacktestEngine:
 
 
 # --------------------------------------------------------------------------------------
-# Export helpers (guardar en reports/run_<ts>/ por defecto)
+# Export helpers
 # --------------------------------------------------------------------------------------
-from typing import Union as _Union  # evitar colisión de nombre arriba
+from typing import Union as _Union
 
-_last_report_dir: Optional[Path] = None  # fallback si se llama fuera del engine
+_last_report_dir: Optional[Path] = None
 
 
 def _resolve_out_path(default_name: str, report_dir: Optional[_Union[str, Path]]) -> Path:
+    """
+    Resolución de ruta de salida:
+    - Si report_dir se especifica → <report_dir>/<default_name>
+    - Si default_name incluye ruta (relativa con directorio o absoluta) → se respeta TAL CUAL.
+    - En caso contrario → reports/run_<ts>/<default_name>
+    """
+    # 1) Ruta explícita de reporte
     if report_dir is not None:
-        rd = Path(report_dir); rd.mkdir(parents=True, exist_ok=True); return rd / default_name
+        rd = Path(report_dir)
+        rd.mkdir(parents=True, exist_ok=True)
+        return rd / default_name
+
+    # 2) Si el nombre ya incluye subdirectorios o es absoluto, respétalo
+    p = Path(default_name)
+    if p.is_absolute() or len(p.parts) > 1:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    # 3) Fallback: usa el último run o crea uno nuevo
+    global _last_report_dir
     if _last_report_dir and _last_report_dir.exists():
         return _last_report_dir / default_name
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     rd = Path("reports") / f"run_{ts}"
     rd.mkdir(parents=True, exist_ok=True)
+    _last_report_dir = rd
     return rd / default_name
 
 
 def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trades.csv', *, report_dir: Optional[_Union[str, Path]] = None) -> Path:
     """
-    Exporta trades a CSV.
-    Si no se especifica report_dir, guarda en reports/run_<ts>/. Devuelve la ruta escrita.
+    Exporta trades a CSV. Siempre crea el archivo, incluso si no hay trades (cabeceras vacías).
     """
     global _last_report_dir
     out_path = _resolve_out_path(filename, report_dir)
 
-    # Extraer trades homogéneos
     if isinstance(results, BacktestResults):
         trades = results.trades
     else:
@@ -831,8 +801,8 @@ def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trad
             trades.append(Trade(
                 epic=d.get('epic', ''),
                 direction=d.get('direction', ''),
-                entry_date=pd.Timestamp(d.get('entry_date')).to_pydatetime(),
-                exit_date=pd.Timestamp(d.get('exit_date')).to_pydatetime(),
+                entry_date=pd.Timestamp(d.get('entry_date')).to_pydatetime() if d.get('entry_date') else None,
+                exit_date=pd.Timestamp(d.get('exit_date')).to_pydatetime() if d.get('exit_date') else None,
                 entry_price=float(d.get('entry_price', 0.0)),
                 exit_price=float(d.get('exit_price', 0.0)),
                 units=float(d.get('units', 0.0)),
@@ -847,12 +817,14 @@ def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trad
                 regime=str(d.get('regime', 'lateral')),
             ))
 
-    if not trades:
-        logger.warning("No hay trades para exportar")
-        return out_path
+    cols = [
+        'epic','direction','entry_date','exit_date','entry_price','exit_price',
+        'units','position_size','pnl','pnl_percent','exit_reason','confidence',
+        'duration_hours','day_of_week','hour_of_day','regime'
+    ]
 
     rows = []
-    for t in trades:
+    for t in trades or []:
         rows.append({
             'epic': t.epic,
             'direction': t.direction,
@@ -871,19 +843,16 @@ def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trad
             'hour_of_day': t.hour_of_day,
             'regime': t.regime,
         })
-    df = pd.DataFrame(rows)
+
+    df = pd.DataFrame(rows, columns=cols)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
-    logger.info(f"✅ Trades exportados a {out_path.as_posix()}")
+    logger.info(f"✅ Trades exportados a {out_path.as_posix()} ({len(df)} filas)")
     _last_report_dir = out_path.parent
     return out_path
 
 
 def export_summary_to_json(results: BacktestResults | Dict, filename: str = 'metrics.json', *, report_dir: Optional[_Union[str, Path]] = None) -> Path:
-    """
-    Exporta un resumen a JSON (compatible con BacktestResults o dict legacy).
-    Si no se especifica report_dir, guarda en reports/run_<ts>/. Devuelve la ruta escrita.
-    """
     import json
     global _last_report_dir
     out_path = _resolve_out_path(filename, report_dir)
@@ -914,7 +883,7 @@ def export_summary_to_json(results: BacktestResults | Dict, filename: str = 'met
             'temporal': {
                 'by_day': results.performance_by_day,
                 'by_hour': results.performance_by_hour,
-                'by_session': results.performance_by_session,   # NUEVO
+                'by_session': results.performance_by_session,
                 'by_regime': results.performance_by_regime,
             },
         }
@@ -954,21 +923,14 @@ def export_summary_to_json(results: BacktestResults | Dict, filename: str = 'met
 
 
 def export_equity_to_csv(results: BacktestResults | Dict, filename: str = 'equity.csv', *, report_dir: Optional[_Union[str, Path]] = None) -> Path:
-    """
-    NUEVO: exporta la curva de equity (date, equity, cash, open_positions) a CSV.
-    Si no se especifica report_dir, guarda en reports/run_<ts>/. Devuelve la ruta escrita.
-    """
+    """Exporta la curva de equity (date, equity, cash, open_positions) a CSV."""
     global _last_report_dir
     out_path = _resolve_out_path(filename, report_dir)
 
-    if isinstance(results, BacktestResults):
-        rows = results.equity_curve
-    else:
-        rows = results.get('equity_curve', [])
-
-    df = pd.DataFrame(rows)
+    rows = results.equity_curve if isinstance(results, BacktestResults) else results.get('equity_curve', [])
+    df = pd.DataFrame(rows, columns=['date', 'equity', 'cash', 'open_positions'])
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
-    logger.info(f"✅ Equity exportada a {out_path.as_posix()}")
+    logger.info(f"✅ Equity exportada a {out_path.as_posix()} ({len(df)} filas)")
     _last_report_dir = out_path.parent
     return out_path

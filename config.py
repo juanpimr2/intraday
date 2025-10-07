@@ -119,7 +119,7 @@ class Config:
     # ============================================
     # RSI
     RSI_OVERSOLD = 35       # Umbral de sobreventa
-    RSI_OVERBOUGHT = 70     # Umbral de sobrecompra
+    RSI_OVERBOUGHT = 75     # Umbral de sobrecompra
     RSI_PERIOD = 14         # Período del RSI
 
     # MACD

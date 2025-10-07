@@ -578,3 +578,106 @@ def run_dashboard(host='0.0.0.0', port=5000, debug=False):
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     run_dashboard(debug=True)
+# ============================================
+# NUEVOS ENDPOINTS - EQUITY / METRICS / FILES
+# ============================================
+
+from pathlib import Path
+import json
+
+def _find_latest_run_dir(base: str = "reports") -> Path | None:
+    """Devuelve Path al último directorio reports/run_<ts> si existe."""
+    base_p = Path(base)
+    if not base_p.exists():
+        return None
+    runs = [p for p in base_p.iterdir() if p.is_dir() and p.name.startswith("run_")]
+    if not runs:
+        return None
+    runs.sort(key=lambda p: p.name, reverse=True)
+    return runs[0]
+
+@app.route('/api/equity/export')
+def export_equity():
+    """
+    Exporta equity curve.
+    Query params:
+      - source: 'db' | 'reports' | 'auto' (default: 'auto' = intenta DB y luego reports)
+      - format: 'csv' | 'json' (default: 'csv')
+      - limit: int (solo para DB)
+    """
+    source = (request.args.get('source') or 'auto').lower()
+    out_format = (request.args.get('format') or 'csv').lower()
+    limit = request.args.get('limit', type=int, default=10000)
+
+    # 1) Intentar desde DB vía AnalyticsQueries si procede
+    if source in ('auto', 'db'):
+        try:
+            analytics = get_analytics()
+            if hasattr(analytics, "get_equity_series"):
+                series = analytics.get_equity_series(limit=limit)
+                df = pd.DataFrame(series)
+                if df.empty:
+                    raise ValueError("No hay equity en DB")
+                if out_format == 'json':
+                    return jsonify(series)
+                # CSV en memoria
+                buf = BytesIO()
+                df.to_csv(buf, index=False)
+                buf.seek(0)
+                return send_file(buf, as_attachment=True, download_name="equity.csv", mimetype="text/csv")
+        except Exception as e:
+            # seguirá al fallback de reports
+            logger.info(f"Equity desde DB no disponible: {e}")
+
+    # 2) Fallback: tomar del último run reports/run_<ts>/equity.csv
+    run_dir = _find_latest_run_dir()
+    if not run_dir:
+        return jsonify({'error': 'No se encontró carpeta reports/run_*'}), 404
+    equity_path = run_dir / "equity.csv"
+    if not equity_path.exists():
+        return jsonify({'error': f'No existe {equity_path.as_posix()}'}), 404
+
+    if out_format == 'json':
+        df = pd.read_csv(equity_path)
+        return jsonify(df.to_dict(orient='records'))
+
+    return send_file(equity_path, as_attachment=True, download_name="equity.csv")
+
+@app.route('/api/metrics/latest')
+def get_latest_metrics():
+    """
+    Devuelve metrics.json del último run (reports/run_<ts>/metrics.json).
+    """
+    run_dir = _find_latest_run_dir()
+    if not run_dir:
+        return jsonify({'error': 'No se encontró carpeta reports/run_*'}), 404
+    metrics_path = run_dir / "metrics.json"
+    if not metrics_path.exists():
+        return jsonify({'error': f'No existe {metrics_path.as_posix()}'}), 404
+    try:
+        data = json.loads(metrics_path.read_text(encoding='utf-8'))
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Error leyendo metrics.json: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/reports/latest/files')
+def list_latest_report_files():
+    """
+    Lista archivos disponibles en el último run (para mostrar botones dinámicos en el dashboard).
+    """
+    run_dir = _find_latest_run_dir()
+    if not run_dir:
+        return jsonify({'error': 'No se encontró carpeta reports/run_*'}), 404
+    files = []
+    for p in run_dir.glob('*'):
+        if p.is_file():
+            files.append({
+                'name': p.name,
+                'size': p.stat().st_size,
+                'path': p.as_posix()
+            })
+    return jsonify({
+        'run_dir': run_dir.as_posix(),
+        'files': files
+    })
