@@ -59,7 +59,7 @@ class AnalyticsQueries:
                 direction,
                 entry_price,
                 exit_price,
-                size,
+                position_size AS size,  -- alias de compatibilidad
                 pnl,
                 pnl_percent,
                 entry_date,
@@ -85,7 +85,7 @@ class AnalyticsQueries:
                 direction,
                 entry_price,
                 exit_price,
-                size,
+                position_size AS size,  -- alias de compatibilidad
                 pnl,
                 pnl_percent,
                 entry_date,
