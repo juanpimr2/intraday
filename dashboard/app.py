@@ -177,14 +177,19 @@ def get_status():
 
 
 # Instancia global del controlador
-bot_controller = None
+_controller = None
 
 def get_bot_controller():
-    """Obtiene o crea el controlador del bot"""
-    global bot_controller
-    if bot_controller is None:
-        bot_controller = BotController()
-    return bot_controller
+    """
+    Devuelve un BotController **inicializado con el api_client**.
+    Evita el error: BotController.__init__() missing 'api_client'
+    """
+    global _controller
+    if _controller is None:
+        # import aquí para evitar ciclos
+        from utils.bot_controller import BotController
+        _controller = BotController(get_api_client(), poll_seconds=15)
+    return _controller
 
 
 @app.route('/api/bot/start', methods=['POST'])
