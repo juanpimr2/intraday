@@ -1,7 +1,7 @@
 # dashboard/app.py
 """
 Dashboard web para monitorear el bot de trading
-VERSIÓN COMPLETA con exports, backtesting, historial
+VERSIÓN CORREGIDA: usa bot_state global (sin circular imports)
 """
 
 from flask import Flask, render_template, jsonify, send_file, request
@@ -19,15 +19,17 @@ from database.database_manager import DatabaseManager
 from database.queries.analytics import AnalyticsQueries
 from backtesting.backtest_engine import BacktestEngine
 
+# ✅ IMPORTAR EL ESTADO GLOBAL (sin circular imports)
+from utils.bot_state import bot_state
+
 app = Flask(__name__)
-CORS(app)  # Permitir CORS para desarrollo
+CORS(app)
 logger = logging.getLogger(__name__)
 
 # Clientes globales
 api_client = None
 db_manager = None
 analytics = None
-_controller = None  # ✅ AGREGADO: Variable global para BotController
 
 
 def get_api_client():
@@ -55,24 +57,6 @@ def get_analytics():
     if analytics is None:
         analytics = AnalyticsQueries()
     return analytics
-
-
-# ✅ NUEVA FUNCIÓN: Crear BotController CON api_client
-def get_bot_controller():
-    """
-    Devuelve un BotController **inicializado con el api_client**.
-    Evita el error: BotController.__init__() missing 'api_client'
-    """
-    global _controller
-    if _controller is None:
-        # Importar aquí para evitar ciclos
-        from utils.bot_controller import BotController
-        api = get_api_client()
-        if not api:
-            raise RuntimeError("No se pudo autenticar con la API")
-        _controller = BotController(api, poll_seconds=15)
-    return _controller
-
 
 # ============================================
 # RUTAS PRINCIPALES
@@ -161,7 +145,6 @@ def get_config():
         'enable_adx_filter': Config.ENABLE_ADX_FILTER
     })
 
-
 @app.route('/api/status')
 def get_status():
     """Endpoint para verificar estado del bot"""
@@ -172,19 +155,18 @@ def get_status():
             Config.START_HOUR <= now.hour < Config.END_HOUR
         )
         
-        # ✅ CORREGIDO: Obtener estado del bot controller
-        controller = get_bot_controller()
-        bot_state = controller.get_status()
+        # ✅ Usar el estado global (sin BotController)
+        status = bot_state.get_status()
         
         return jsonify({
-            'status': 'running' if bot_state.get('running', False) else 'paused',
-            'running': bot_state.get('running', False),
+            'status': 'running' if status['running'] else 'paused',
+            'running': status['running'],
             'is_trading_hours': is_trading_hours,
-            'manual_override': bot_state.get('manual_override', False),
-            'last_command': bot_state.get('last_command'),
-            'last_heartbeat': bot_state.get('last_heartbeat'),
+            'manual_override': status['manual_override'],
+            'last_command': status['last_command'],
+            'last_heartbeat': status['last_heartbeat'],
             'current_time': now.isoformat(),
-            'next_scan': 'In progress' if (is_trading_hours and bot_state.get('running')) else 'Paused' if not bot_state.get('running') else 'Waiting for trading hours'
+            'next_scan': 'In progress' if (is_trading_hours and status['running']) else 'Paused' if not status['running'] else 'Waiting for trading hours'
         })
     except Exception as e:
         logger.error(f"Error obteniendo estado: {e}")
@@ -199,9 +181,8 @@ def get_status():
 def start_bot():
     """Inicia el bot manualmente"""
     try:
-        # ✅ CORREGIDO: Usar get_bot_controller()
-        controller = get_bot_controller()
-        controller.start_bot()
+        # ✅ Usar el estado global
+        bot_state.start()
         
         logger.info("✅ Bot iniciado desde dashboard")
         
@@ -217,14 +198,12 @@ def start_bot():
             'error': str(e)
         }), 500
 
-
 @app.route('/api/bot/stop', methods=['POST'])
 def stop_bot():
     """Pausa el bot manualmente"""
     try:
-        # ✅ CORREGIDO: Usar get_bot_controller()
-        controller = get_bot_controller()
-        controller.stop_bot()
+        # ✅ Usar el estado global
+        bot_state.stop()
         
         logger.info("⏸️ Bot pausado desde dashboard")
         
@@ -239,7 +218,6 @@ def stop_bot():
             'success': False,
             'error': str(e)
         }), 500
-
 
 # ============================================
 # ENDPOINTS DE HISTORIAL DE TRADES

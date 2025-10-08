@@ -1,6 +1,6 @@
 # trading/trading_bot.py
 """
-Bot de trading principal - Orquestador (Con persistencia en BD, logs estructurados y Circuit Breaker)
+Bot de trading principal - ARRANCA EN MODO PAUSADO
 """
 
 import time
@@ -14,7 +14,7 @@ from api.capital_client import CapitalClient
 from strategies.intraday_strategy import IntradayStrategy
 from trading.position_manager import PositionManager
 from utils.helpers import safe_float
-from utils.bot_controller import BotController
+from utils.bot_state import bot_state  # ✅ Usar el estado global
 from utils.logger_manager import SessionLogger
 from utils.circuit_breaker import CircuitBreaker
 from database.database_manager import DatabaseManager
@@ -23,35 +23,29 @@ logger = logging.getLogger(__name__)
 
 
 class TradingBot:
-    """Bot de trading intraday - Orquestador principal con persistencia, logs y circuit breaker"""
+    """Bot de trading intraday - ARRANCA PAUSADO, se controla desde dashboard"""
 
     def __init__(self):
         self.api = CapitalClient()
         self.strategy = IntradayStrategy()
         self.position_manager = PositionManager(self.api)
 
-        # ✅ BotController con api_client (sin dependencias de BD)
-        self.controller = BotController(self.api, poll_seconds=15)
-
         self.db_manager = DatabaseManager()
         self.circuit_breaker = CircuitBreaker()
         self.session_logger = None
         self.account_info = {}
-        
-        # ✅ Estado interno (NO en BD)
-        self.is_running = False
         self.signal_ids = {}
 
     def run(self):
-        """Inicia el bot de trading"""
+        """Inicia el bot de trading EN MODO PAUSADO"""
         logger.info("=" * 60)
         logger.info("BOT INTRADAY TRADING - Modo Modular v6.5")
         logger.info("Con control manual, persistencia en BD, logs y Circuit Breaker")
         logger.info("=" * 60)
 
-        # ✅ Marcar como corriendo EN MEMORIA
-        self.is_running = True
-        self.controller.start_bot()  # Sincronizar con BotController
+        # ✅ INICIAR EN MODO PAUSADO (no llamar a bot_state.start())
+        logger.info("⏸️  Bot iniciado en modo PAUSADO")
+        logger.info("💡 Usa el dashboard (http://localhost:5000) para iniciar el bot")
 
         # Autenticar
         if not self.api.authenticate():
@@ -82,17 +76,30 @@ class TradingBot:
             self.session_logger = SessionLogger()
 
         # Loop principal
-        while self.is_running:
+        logger.info("\n" + "=" * 60)
+        logger.info("🔄 LOOP PRINCIPAL INICIADO")
+        logger.info("=" * 60)
+        
+        while True:
             try:
-                # ✅ Verificar estado desde BotController (EN MEMORIA)
-                status = self.controller.get_status()
-                if not status.get('running', False):
-                    logger.info("⏸️ Bot pausado manualmente. Esperando comando de inicio...")
+                # ✅ Verificar estado desde bot_state (EN MEMORIA)
+                if not bot_state.is_running():
+                    # Mostrar mensaje solo cada 30 segundos para no saturar logs
+                    if not hasattr(self, '_last_pause_message') or \
+                       (time.time() - self._last_pause_message) > 30:
+                        logger.info("⏸️  Bot pausado. Esperando comando START desde dashboard...")
+                        self._last_pause_message = time.time()
                     time.sleep(10)
                     continue
 
+                # ✅ Si llegamos aquí, el bot está en modo RUNNING
+                
+                # Limpiar flag de mensaje de pausa
+                if hasattr(self, '_last_pause_message'):
+                    delattr(self, '_last_pause_message')
+                
                 # ✅ Actualizar heartbeat
-                self.controller.update_heartbeat()
+                bot_state.update_heartbeat()
 
                 # Verificar circuit breaker ANTES de operar
                 if self.circuit_breaker.is_active():
@@ -146,6 +153,8 @@ class TradingBot:
                     )
 
                 time.sleep(300)
+
+    # ... (resto de métodos sin cambios: scan_and_trade, _analyze_markets, etc.)
 
     def scan_and_trade(self):
         """Escanea mercados y ejecuta operaciones"""
@@ -652,8 +661,7 @@ class TradingBot:
         logger.info("🛑 Deteniendo bot...")
         
         # ✅ Actualizar estado EN MEMORIA
-        self.is_running = False
-        self.controller.stop_bot()
+        bot_state.stop()
 
         # Finalizar sesión en BD
         try:
