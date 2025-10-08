@@ -30,28 +30,24 @@ class TradingBot:
         self.strategy = IntradayStrategy()
         self.position_manager = PositionManager(self.api)
 
-        # ✅ BotController con api_client (sin dependencias de BD)
+        # ✅ FIX: BotController ahora recibe api_client (antes daba error por faltar argumento)
         self.controller = BotController(self.api, poll_seconds=15)
 
         self.db_manager = DatabaseManager()
         self.circuit_breaker = CircuitBreaker()
         self.session_logger = None
         self.account_info = {}
-        
-        # ✅ Estado interno (NO en BD)
         self.is_running = False
         self.signal_ids = {}
 
     def run(self):
         """Inicia el bot de trading"""
         logger.info("=" * 60)
-        logger.info("BOT INTRADAY TRADING - Modo Modular v6.5")
+        logger.info("BOT INTRADAY TRADING - Modo Modular v6.4")
         logger.info("Con control manual, persistencia en BD, logs y Circuit Breaker")
         logger.info("=" * 60)
 
-        # ✅ Marcar como corriendo EN MEMORIA
         self.is_running = True
-        self.controller.start_bot()  # Sincronizar con BotController
 
         # Autenticar
         if not self.api.authenticate():
@@ -65,7 +61,7 @@ class TradingBot:
 
         # Inicializar circuit breaker con balance actual
         self.circuit_breaker.initialize(balance)
-        logger.info(f"🛡️ Circuit Breaker inicializado con balance: €{balance:.2f}")
+        logger.info(f"🛡️  Circuit Breaker inicializado con balance: €{balance:.2f}")
 
         # Iniciar sesión en BD y sistema de logs
         try:
@@ -78,21 +74,18 @@ class TradingBot:
 
         except Exception as e:
             logger.error(f"❌ Error iniciando sesión de BD: {e}")
-            logger.warning("⚠️ El bot continuará pero sin guardar datos")
+            logger.warning("⚠️  El bot continuará pero sin guardar datos")
             self.session_logger = SessionLogger()
 
         # Loop principal
         while self.is_running:
             try:
-                # ✅ Verificar estado desde BotController (EN MEMORIA)
+                # ✅ FIX: usar get_status() (el BotController no expone is_running())
                 status = self.controller.get_status()
-                if not status.get('running', False):
-                    logger.info("⏸️ Bot pausado manualmente. Esperando comando de inicio...")
+                if not status.get("running", False):
+                    logger.info("⏸️  Bot pausado manualmente. Esperando comando de inicio...")
                     time.sleep(10)
                     continue
-
-                # ✅ Actualizar heartbeat
-                self.controller.update_heartbeat()
 
                 # Verificar circuit breaker ANTES de operar
                 if self.circuit_breaker.is_active():
@@ -111,7 +104,7 @@ class TradingBot:
                     continue
 
                 if not self.is_trading_hours():
-                    logger.info("⏸️ Fuera de horario de trading")
+                    logger.info("⏸️  Fuera de horario de trading")
                     time.sleep(300)
                     continue
 
@@ -154,13 +147,13 @@ class TradingBot:
         logger.info("=" * 60)
 
         if not self.account_info:
-            logger.warning("⚠️ No hay información de cuenta disponible")
+            logger.warning("⚠️  No hay información de cuenta disponible")
             return
 
         balance, available = self.position_manager.get_account_balance(self.account_info)
 
         if balance <= 0:
-            logger.warning("⚠️ Balance insuficiente")
+            logger.warning("⚠️  Balance insuficiente")
             return
 
         # PASO 1: Analizar todos los mercados
@@ -168,7 +161,7 @@ class TradingBot:
         all_analyses = self._analyze_markets()
 
         if not all_analyses:
-            logger.info("ℹ️ No hay señales de trading en ningún activo")
+            logger.info("ℹ️  No hay señales de trading en ningún activo")
 
             # Log resumen vacío
             if self.session_logger:
@@ -184,7 +177,7 @@ class TradingBot:
         valid_analyses = [a for a in all_analyses if a['confidence'] >= Config.MIN_CONFIDENCE]
 
         if not valid_analyses:
-            logger.info(f"ℹ️ Ninguna señal supera la confianza mínima ({Config.MIN_CONFIDENCE:.0%})")
+            logger.info(f"ℹ️  Ninguna señal supera la confianza mínima ({Config.MIN_CONFIDENCE:.0%})")
 
             # Log resumen
             if self.session_logger:
@@ -256,7 +249,7 @@ class TradingBot:
         )
 
         if not plans:
-            logger.info("\nℹ️ No hay operaciones viables tras aplicar límites")
+            logger.info("\nℹ️  No hay operaciones viables tras aplicar límites")
 
             # Log resumen
             if self.session_logger:
@@ -466,7 +459,7 @@ class TradingBot:
     def _execute_trades(self, plans: List[Dict], margin_used: float, total_limit: float) -> int:
         """Ejecuta las operaciones planificadas y las guarda en BD"""
         if not plans:
-            logger.info("ℹ️ No hay planes de operaciones para ejecutar")
+            logger.info("ℹ️  No hay planes de operaciones para ejecutar")
             return 0
 
         plans.sort(key=lambda x: x['confidence'], reverse=True)
@@ -565,7 +558,7 @@ class TradingBot:
                         self.session_logger.log_trade_open(trade_data)
 
                 except Exception as e:
-                    logger.error(f"   ⚠️ Error guardando trade en BD: {e}")
+                    logger.error(f"   ⚠️  Error guardando trade en BD: {e}")
 
                 current_margin += plan['margin_est']
                 executed += 1
@@ -650,8 +643,6 @@ class TradingBot:
     def stop(self):
         """Detiene el bot"""
         logger.info("🛑 Deteniendo bot...")
-        
-        # ✅ Actualizar estado EN MEMORIA
         self.is_running = False
         self.controller.stop_bot()
 

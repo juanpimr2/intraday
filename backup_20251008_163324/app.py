@@ -1,4 +1,3 @@
-# dashboard/app.py
 """
 Dashboard web para monitorear el bot de trading
 VERSIÓN COMPLETA con exports, backtesting, historial
@@ -12,6 +11,7 @@ import pandas as pd
 import os
 from io import BytesIO
 
+from utils.bot_controller import BotController
 from api.capital_client import CapitalClient
 from config import Config
 from utils.helpers import safe_float
@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 api_client = None
 db_manager = None
 analytics = None
-_controller = None  # ✅ AGREGADO: Variable global para BotController
 
 
 def get_api_client():
@@ -57,23 +56,6 @@ def get_analytics():
     return analytics
 
 
-# ✅ NUEVA FUNCIÓN: Crear BotController CON api_client
-def get_bot_controller():
-    """
-    Devuelve un BotController **inicializado con el api_client**.
-    Evita el error: BotController.__init__() missing 'api_client'
-    """
-    global _controller
-    if _controller is None:
-        # Importar aquí para evitar ciclos
-        from utils.bot_controller import BotController
-        api = get_api_client()
-        if not api:
-            raise RuntimeError("No se pudo autenticar con la API")
-        _controller = BotController(api, poll_seconds=15)
-    return _controller
-
-
 # ============================================
 # RUTAS PRINCIPALES
 # ============================================
@@ -85,7 +67,7 @@ def index():
 
 
 # ============================================
-# API ENDPOINTS BÁSICOS
+# API ENDPOINTS BÁSICOS (YA EXISTENTES)
 # ============================================
 
 @app.route('/api/account')
@@ -135,7 +117,7 @@ def get_positions():
             'currency': position_data.get('currency', 'EUR'),
             'createdDate': position_data.get('createdDate', ''),
             'stopLevel': safe_float(position_data.get('stopLevel', 0)),
-            'limitLevel': safe_float(position_data.get('profitLevel', 0)),
+            'limitLevel': safe_float(position_data.get('profitLevel', 0)),  # ← CORRECTO
             'dealId': position_data.get('dealId', '')
         })
     
@@ -164,7 +146,7 @@ def get_config():
 
 @app.route('/api/status')
 def get_status():
-    """Endpoint para verificar estado del bot"""
+    """Endpoint para verificar estado del bot (VERSIÓN MEJORADA)"""
     try:
         now = datetime.now()
         is_trading_hours = (
@@ -172,7 +154,7 @@ def get_status():
             Config.START_HOUR <= now.hour < Config.END_HOUR
         )
         
-        # ✅ CORREGIDO: Obtener estado del bot controller
+        # Obtener estado del bot controller
         controller = get_bot_controller()
         bot_state = controller.get_status()
         
@@ -182,7 +164,6 @@ def get_status():
             'is_trading_hours': is_trading_hours,
             'manual_override': bot_state.get('manual_override', False),
             'last_command': bot_state.get('last_command'),
-            'last_heartbeat': bot_state.get('last_heartbeat'),
             'current_time': now.isoformat(),
             'next_scan': 'In progress' if (is_trading_hours and bot_state.get('running')) else 'Paused' if not bot_state.get('running') else 'Waiting for trading hours'
         })
@@ -195,15 +176,30 @@ def get_status():
         }), 500
 
 
+# Instancia global del controlador
+_controller = None
+
+def get_bot_controller():
+    """
+    Devuelve un BotController **inicializado con el api_client**.
+    Evita el error: BotController.__init__() missing 'api_client'
+    """
+    global _controller
+    if _controller is None:
+        # import aquí para evitar ciclos
+        from utils.bot_controller import BotController
+        _controller = BotController(get_api_client(), poll_seconds=15)
+    return _controller
+
+
 @app.route('/api/bot/start', methods=['POST'])
 def start_bot():
     """Inicia el bot manualmente"""
     try:
-        # ✅ CORREGIDO: Usar get_bot_controller()
         controller = get_bot_controller()
         controller.start_bot()
         
-        logger.info("✅ Bot iniciado desde dashboard")
+        logger.info("Bot iniciado desde dashboard")
         
         return jsonify({
             'success': True,
@@ -211,7 +207,7 @@ def start_bot():
             'timestamp': datetime.now().isoformat()
         })
     except Exception as e:
-        logger.error(f"❌ Error iniciando bot: {e}")
+        logger.error(f"Error iniciando bot: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -222,11 +218,10 @@ def start_bot():
 def stop_bot():
     """Pausa el bot manualmente"""
     try:
-        # ✅ CORREGIDO: Usar get_bot_controller()
         controller = get_bot_controller()
         controller.stop_bot()
         
-        logger.info("⏸️ Bot pausado desde dashboard")
+        logger.info("Bot pausado desde dashboard")
         
         return jsonify({
             'success': True,
@@ -234,15 +229,17 @@ def stop_bot():
             'timestamp': datetime.now().isoformat()
         })
     except Exception as e:
-        logger.error(f"❌ Error pausando bot: {e}")
+        logger.error(f"Error pausando bot: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
         }), 500
 
 
+
+
 # ============================================
-# ENDPOINTS DE HISTORIAL DE TRADES
+# NUEVOS ENDPOINTS - HISTORIAL DE TRADES
 # ============================================
 
 @app.route('/api/trades/history')
@@ -251,12 +248,15 @@ def get_trades_history():
     try:
         analytics = get_analytics()
         
+        # Parámetros opcionales
         session_id = request.args.get('session_id', type=int)
         limit = request.args.get('limit', 100, type=int)
         
+        # Obtener trades
         if session_id:
             trades = analytics.get_trades_by_session(session_id)
         else:
+            # Obtener últimos N trades
             trades = analytics.get_recent_trades(limit=limit)
         
         return jsonify({
@@ -281,6 +281,7 @@ def get_trades_stats():
         if session_id:
             stats = analytics.get_trade_analysis(session_id=session_id)
         else:
+            # Estadísticas globales
             stats = analytics.get_global_stats()
         
         return jsonify({
@@ -294,12 +295,17 @@ def get_trades_stats():
 
 
 # ============================================
-# ENDPOINTS DE EXPORT
+# NUEVOS ENDPOINTS - EXPORT TRADES
 # ============================================
 
 @app.route('/api/trades/export/<format>')
 def export_trades(format):
-    """Exporta trades a CSV o Excel"""
+    """
+    Exporta trades a CSV o Excel
+    
+    Formatos: csv, excel
+    Query params: session_id (opcional)
+    """
     try:
         analytics = get_analytics()
         session_id = request.args.get('session_id', type=int)
@@ -307,17 +313,20 @@ def export_trades(format):
         if format not in ['csv', 'excel']:
             return jsonify({'error': 'Formato no válido. Use csv o excel'}), 400
         
+        # Generar archivo
         if session_id:
             filepath = analytics.export_trades(
                 session_id=session_id,
                 format=format
             )
         else:
+            # Exportar todos los trades
             filepath = analytics.export_all_trades(format=format)
         
         if not filepath or not os.path.exists(filepath):
             return jsonify({'error': 'No se pudo generar el archivo'}), 500
         
+        # Enviar archivo
         return send_file(
             filepath,
             as_attachment=True,
@@ -359,7 +368,7 @@ def export_full_report():
 
 
 # ============================================
-# ENDPOINTS DE SESIONES
+# NUEVOS ENDPOINTS - SESIONES
 # ============================================
 
 @app.route('/api/sessions/list')
@@ -388,9 +397,16 @@ def get_session_detail(session_id):
     try:
         analytics = get_analytics()
         
+        # Info básica de la sesión
         session = analytics.get_session_info(session_id)
+        
+        # Trades de la sesión
         trades = analytics.get_trades_by_session(session_id)
+        
+        # Estadísticas
         stats = analytics.get_trade_analysis(session_id=session_id)
+        
+        # Señales generadas
         signals = analytics.get_signals_by_session(session_id)
         
         return jsonify({
@@ -407,12 +423,21 @@ def get_session_detail(session_id):
 
 
 # ============================================
-# ENDPOINTS DE BACKTESTING
+# NUEVOS ENDPOINTS - BACKTESTING
 # ============================================
 
 @app.route('/api/backtest/run', methods=['POST'])
 def run_backtest():
-    """Ejecuta un backtest con datos históricos"""
+    """
+    Ejecuta un backtest con datos históricos
+    
+    Body JSON:
+    {
+        "days": 30,  # Días históricos a usar
+        "initial_capital": 10000,  # Capital inicial
+        "assets": ["GOLD", "TSLA"]  # Opcional, usa Config.ASSETS si no se especifica
+    }
+    """
     try:
         data = request.get_json()
         
@@ -420,12 +445,14 @@ def run_backtest():
         initial_capital = data.get('initial_capital', 10000.0)
         assets = data.get('assets', Config.ASSETS)
         
+        # Validaciones
         if days < 1 or days > 365:
             return jsonify({'error': 'days debe estar entre 1 y 365'}), 400
         
         if initial_capital < 100:
             return jsonify({'error': 'Capital mínimo: 100'}), 400
         
+        # Obtener datos históricos
         api = get_api_client()
         if not api:
             return jsonify({'error': 'No autenticado'}), 401
@@ -436,12 +463,13 @@ def run_backtest():
                 market_data = api.get_market_data(
                     asset,
                     Config.TIMEFRAME,
-                    max_values=days * 24
+                    max_values=days * 24  # Aproximadamente 24 horas/día
                 )
                 
                 if market_data and 'prices' in market_data:
                     df = pd.DataFrame(market_data['prices'])
                     
+                    # Limpiar datos
                     for col in ['closePrice', 'openPrice', 'highPrice', 'lowPrice']:
                         if col in df.columns:
                             df[col] = df[col].apply(safe_float)
@@ -458,9 +486,11 @@ def run_backtest():
         if not historical_data:
             return jsonify({'error': 'No se pudieron obtener datos históricos'}), 500
         
+        # Ejecutar backtest
         engine = BacktestEngine(initial_capital=initial_capital)
         results = engine.run(historical_data)
         
+        # Formatear resultados
         return jsonify({
             'results': {
                 'initial_capital': results.get('initial_capital', 0),
@@ -487,7 +517,7 @@ def run_backtest():
 
 
 # ============================================
-# ENDPOINTS DE SEÑALES
+# NUEVOS ENDPOINTS - SEÑALES
 # ============================================
 
 @app.route('/api/signals/recent')
@@ -518,9 +548,11 @@ def get_recent_signals():
 def health_check():
     """Health check del dashboard"""
     try:
+        # Verificar BD
         db = get_db_manager()
         db_healthy = db is not None and db.db is not None
         
+        # Verificar API
         api = get_api_client()
         api_healthy = api is not None
         
@@ -551,3 +583,106 @@ def run_dashboard(host='0.0.0.0', port=5000, debug=False):
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     run_dashboard(debug=True)
+# ============================================
+# NUEVOS ENDPOINTS - EQUITY / METRICS / FILES
+# ============================================
+
+from pathlib import Path
+import json
+
+def _find_latest_run_dir(base: str = "reports") -> Path | None:
+    """Devuelve Path al último directorio reports/run_<ts> si existe."""
+    base_p = Path(base)
+    if not base_p.exists():
+        return None
+    runs = [p for p in base_p.iterdir() if p.is_dir() and p.name.startswith("run_")]
+    if not runs:
+        return None
+    runs.sort(key=lambda p: p.name, reverse=True)
+    return runs[0]
+
+@app.route('/api/equity/export')
+def export_equity():
+    """
+    Exporta equity curve.
+    Query params:
+      - source: 'db' | 'reports' | 'auto' (default: 'auto' = intenta DB y luego reports)
+      - format: 'csv' | 'json' (default: 'csv')
+      - limit: int (solo para DB)
+    """
+    source = (request.args.get('source') or 'auto').lower()
+    out_format = (request.args.get('format') or 'csv').lower()
+    limit = request.args.get('limit', type=int, default=10000)
+
+    # 1) Intentar desde DB vía AnalyticsQueries si procede
+    if source in ('auto', 'db'):
+        try:
+            analytics = get_analytics()
+            if hasattr(analytics, "get_equity_series"):
+                series = analytics.get_equity_series(limit=limit)
+                df = pd.DataFrame(series)
+                if df.empty:
+                    raise ValueError("No hay equity en DB")
+                if out_format == 'json':
+                    return jsonify(series)
+                # CSV en memoria
+                buf = BytesIO()
+                df.to_csv(buf, index=False)
+                buf.seek(0)
+                return send_file(buf, as_attachment=True, download_name="equity.csv", mimetype="text/csv")
+        except Exception as e:
+            # seguirá al fallback de reports
+            logger.info(f"Equity desde DB no disponible: {e}")
+
+    # 2) Fallback: tomar del último run reports/run_<ts>/equity.csv
+    run_dir = _find_latest_run_dir()
+    if not run_dir:
+        return jsonify({'error': 'No se encontró carpeta reports/run_*'}), 404
+    equity_path = run_dir / "equity.csv"
+    if not equity_path.exists():
+        return jsonify({'error': f'No existe {equity_path.as_posix()}'}), 404
+
+    if out_format == 'json':
+        df = pd.read_csv(equity_path)
+        return jsonify(df.to_dict(orient='records'))
+
+    return send_file(equity_path, as_attachment=True, download_name="equity.csv")
+
+@app.route('/api/metrics/latest')
+def get_latest_metrics():
+    """
+    Devuelve metrics.json del último run (reports/run_<ts>/metrics.json).
+    """
+    run_dir = _find_latest_run_dir()
+    if not run_dir:
+        return jsonify({'error': 'No se encontró carpeta reports/run_*'}), 404
+    metrics_path = run_dir / "metrics.json"
+    if not metrics_path.exists():
+        return jsonify({'error': f'No existe {metrics_path.as_posix()}'}), 404
+    try:
+        data = json.loads(metrics_path.read_text(encoding='utf-8'))
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Error leyendo metrics.json: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/reports/latest/files')
+def list_latest_report_files():
+    """
+    Lista archivos disponibles en el último run (para mostrar botones dinámicos en el dashboard).
+    """
+    run_dir = _find_latest_run_dir()
+    if not run_dir:
+        return jsonify({'error': 'No se encontró carpeta reports/run_*'}), 404
+    files = []
+    for p in run_dir.glob('*'):
+        if p.is_file():
+            files.append({
+                'name': p.name,
+                'size': p.stat().st_size,
+                'path': p.as_posix()
+            })
+    return jsonify({
+        'run_dir': run_dir.as_posix(),
+        'files': files
+    })
