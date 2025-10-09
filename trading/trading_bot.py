@@ -63,8 +63,8 @@ class TradingBot:
 
         # Iniciar sesión en BD y sistema de logs
         try:
-            config_snapshot = self._get_config_snapshot()
-            session_id = self.db_manager.start_session(balance, config_snapshot)
+            # config_snapshot eliminado - schema simplificado
+            session_id = self.db_manager.start_session(balance)
             logger.info(f"📊 Sesión de BD iniciada - ID: {session_id}")
 
             # Iniciar logger de sesión
@@ -328,14 +328,6 @@ class TradingBot:
 
                 analysis = self.strategy.analyze(df, epic)
 
-                # Guardar señal en BD
-                try:
-                    signal_id = self.db_manager.save_signal(analysis)
-                    if signal_id and analysis['signal'] in ['BUY', 'SELL']:
-                        self.signal_ids[epic] = signal_id
-                except Exception as e:
-                    logger.debug(f"Error guardando señal en BD: {e}")
-
                 # Log en archivo de señales
                 if self.session_logger and analysis['signal'] in ['BUY', 'SELL']:
                     self.session_logger.log_signal(analysis)
@@ -562,12 +554,11 @@ class TradingBot:
                     trade_id = self.db_manager.save_trade_open(trade_data)
 
                     if trade_id and self.signal_ids.get(plan['epic']):
-                        self.db_manager.mark_signal_executed(
-                            self.signal_ids[plan['epic']],
-                            trade_id
-                        )
-
-                    logger.info(f"   💾 Trade guardado en BD - ID: {trade_id}")
+                        # self.db_manager.mark_signal_executed(  # Tabla signals eliminada
+                        #     self.signal_ids[plan['epic']],
+                        #     trade_id
+                        # )
+                        logger.info(f"   💾 Trade guardado en BD - ID: {trade_id}")
 
                     # Log en archivo de trades
                     if self.session_logger:
@@ -609,32 +600,12 @@ class TradingBot:
         balance, available = self.position_manager.get_account_balance(self.account_info)
         logger.info(f"💼 Balance: €{balance:.2f} | Disponible: €{available:.2f}")
 
-    def _get_config_snapshot(self) -> dict:
-        """Obtiene snapshot de la configuración actual"""
-        return {
-            'assets': Config.ASSETS,
-            'max_positions': Config.MAX_POSITIONS,
-            'capital_mode': Config.CAPITAL_MODE,
-            'max_capital_percent': Config.MAX_CAPITAL_PERCENT,
-            'max_capital_fixed': Config.MAX_CAPITAL_FIXED,
-            'sl_tp_mode': Config.SL_TP_MODE,
-            'timeframe': Config.TIMEFRAME,
-            'enable_mtf': Config.ENABLE_MTF,
-            'enable_adx_filter': Config.ENABLE_ADX_FILTER,
-            'min_confidence': Config.MIN_CONFIDENCE,
-            'circuit_breaker': {
-                'enabled': Config.ENABLE_CIRCUIT_BREAKER,
-                'max_daily_loss': Config.MAX_DAILY_LOSS_PERCENT,
-                'max_weekly_loss': Config.MAX_WEEKLY_LOSS_PERCENT,
-                'max_consecutive_losses': Config.MAX_CONSECUTIVE_LOSSES,
-                'max_drawdown': Config.MAX_TOTAL_DRAWDOWN_PERCENT
-            }
-        }
+    # def _get_config_snapshot eliminado - config_snapshot no se usa
 
     def _save_account_snapshot(self):
         """Guarda snapshot del estado de la cuenta"""
         try:
-            if not self.db_manager.has_active_session():
+            if not self.db_manager.session_id is not None:
                 return
 
             balance, available = self.position_manager.get_account_balance(self.account_info)
@@ -665,7 +636,7 @@ class TradingBot:
 
         # Finalizar sesión en BD
         try:
-            if self.db_manager.has_active_session():
+            if self.db_manager.session_id is not None:
                 balance, _ = self.position_manager.get_account_balance(self.account_info)
                 self.db_manager.end_session(balance)
                 logger.info("📊 Sesión de BD finalizada")
