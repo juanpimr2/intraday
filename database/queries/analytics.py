@@ -62,13 +62,13 @@ class AnalyticsQueries:
                 position_size AS size,  -- alias de compatibilidad
                 pnl,
                 pnl_percent,
-                entry_date,
+                entry_time,
                 exit_date,
                 reason,
                 confidence
             FROM trades
             WHERE session_id = %s
-            ORDER BY entry_date DESC
+            ORDER BY entry_time DESC
         """
         
         with self.db.get_cursor() as cursor:
@@ -88,12 +88,12 @@ class AnalyticsQueries:
                 position_size AS size,  -- alias de compatibilidad
                 pnl,
                 pnl_percent,
-                entry_date,
+                entry_time,
                 exit_date,
                 reason,
                 confidence
             FROM trades
-            ORDER BY entry_date DESC
+            ORDER BY entry_time DESC
             LIMIT %s
         """
         
@@ -208,8 +208,8 @@ class AnalyticsQueries:
         df = pd.DataFrame(trades)
         
         # Formatear fechas
-        if 'entry_date' in df.columns:
-            df['entry_date'] = pd.to_datetime(df['entry_date'])
+        if 'entry_time' in df.columns:
+            df['entry_time'] = pd.to_datetime(df['entry_time'])
         if 'exit_date' in df.columns:
             df['exit_date'] = pd.to_datetime(df['exit_date'])
         
@@ -239,8 +239,8 @@ class AnalyticsQueries:
         df = pd.DataFrame(trades)
         
         # Formatear fechas
-        if 'entry_date' in df.columns:
-            df['entry_date'] = pd.to_datetime(df['entry_date'])
+        if 'entry_time' in df.columns:
+            df['entry_time'] = pd.to_datetime(df['entry_time'])
         if 'exit_date' in df.columns:
             df['exit_date'] = pd.to_datetime(df['exit_date'])
         
@@ -296,8 +296,8 @@ class AnalyticsQueries:
             # Hoja 2: Trades
             if trades:
                 trades_df = pd.DataFrame(trades)
-                if 'entry_date' in trades_df.columns:
-                    trades_df['entry_date'] = pd.to_datetime(trades_df['entry_date'])
+                if 'entry_time' in trades_df.columns:
+                    trades_df['entry_time'] = pd.to_datetime(trades_df['entry_time'])
                 if 'exit_date' in trades_df.columns:
                     trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'])
                 trades_df.to_excel(writer, sheet_name='Trades', index=False)
@@ -398,8 +398,8 @@ class AnalyticsQueries:
                     AVG(ms.confidence) as avg_confidence
                 FROM market_signals ms
                 LEFT JOIN trades t ON ms.epic = t.epic 
-                    AND ms.created_at BETWEEN t.entry_date - INTERVAL '5 minutes' 
-                    AND t.entry_date + INTERVAL '5 minutes'
+                    AND ms.created_at BETWEEN t.entry_time - INTERVAL '5 minutes' 
+                    AND t.entry_time + INTERVAL '5 minutes'
                 WHERE ms.session_id = %s
             """
             params = (session_id,)
@@ -413,8 +413,8 @@ class AnalyticsQueries:
                     AVG(ms.confidence) as avg_confidence
                 FROM market_signals ms
                 LEFT JOIN trades t ON ms.epic = t.epic 
-                    AND ms.created_at BETWEEN t.entry_date - INTERVAL '5 minutes' 
-                    AND t.entry_date + INTERVAL '5 minutes'
+                    AND ms.created_at BETWEEN t.entry_time - INTERVAL '5 minutes' 
+                    AND t.entry_time + INTERVAL '5 minutes'
             """
             params = None
         

@@ -12,7 +12,7 @@ from typing import List, Dict
 from config import Config
 from api.capital_client import CapitalClient
 from strategies.intraday_strategy import IntradayStrategy
-from trading.position_manager import PositionManager
+from trading.core.position_manager import PositionManager
 from utils.helpers import safe_float
 from utils.bot_state import bot_state  # ✅ Usar el estado global
 from utils.logger_manager import SessionLogger

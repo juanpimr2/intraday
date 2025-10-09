@@ -50,7 +50,7 @@ def _to_utc(ts: Union[pd.Timestamp, datetime]) -> pd.Timestamp:
 class Trade:
     epic: str
     direction: str
-    entry_date: Union[datetime, pd.Timestamp]
+    entry_time: Union[datetime, pd.Timestamp]
     exit_date: Union[datetime, pd.Timestamp]
     entry_price: float
     exit_price: float
@@ -407,7 +407,7 @@ class BacktestEngine:
             'epic': signal['epic'],
             'direction': direction,
             'entry_price': price,
-            'entry_date': _to_utc(ts),
+            'entry_time': _to_utc(ts),
             'units': units,
             'position_size': position_size,
             'stop_loss': stop_loss,
@@ -465,7 +465,7 @@ class BacktestEngine:
         entry_price = position['entry_price']
         units = position['units']
         direction = position['direction']
-        entry_ts = _to_utc(position['entry_date'])
+        entry_ts = _to_utc(position['entry_time'])
         exit_ts = _to_utc(exit_ts)
 
         pnl = (exit_price - entry_price) * units if direction == 'BUY' else (entry_price - exit_price) * units
@@ -479,7 +479,7 @@ class BacktestEngine:
         trade = Trade(
             epic=position['epic'],
             direction=direction,
-            entry_date=entry_ts.to_pydatetime(),
+            entry_time=entry_ts.to_pydatetime(),
             exit_date=exit_ts.to_pydatetime(),
             entry_price=float(entry_price),
             exit_price=float(exit_price),
@@ -801,7 +801,7 @@ def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trad
             trades.append(Trade(
                 epic=d.get('epic', ''),
                 direction=d.get('direction', ''),
-                entry_date=pd.Timestamp(d.get('entry_date')).to_pydatetime() if d.get('entry_date') else None,
+                entry_time=pd.Timestamp(d.get('entry_time')).to_pydatetime() if d.get('entry_time') else None,
                 exit_date=pd.Timestamp(d.get('exit_date')).to_pydatetime() if d.get('exit_date') else None,
                 entry_price=float(d.get('entry_price', 0.0)),
                 exit_price=float(d.get('exit_price', 0.0)),
@@ -818,7 +818,7 @@ def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trad
             ))
 
     cols = [
-        'epic','direction','entry_date','exit_date','entry_price','exit_price',
+        'epic','direction','entry_time','exit_date','entry_price','exit_price',
         'units','position_size','pnl','pnl_percent','exit_reason','confidence',
         'duration_hours','day_of_week','hour_of_day','regime'
     ]
@@ -828,7 +828,7 @@ def export_results_to_csv(results: BacktestResults | Dict, filename: str = 'trad
         rows.append({
             'epic': t.epic,
             'direction': t.direction,
-            'entry_date': t.entry_date,
+            'entry_time': t.entry_time,
             'exit_date': t.exit_date,
             'entry_price': t.entry_price,
             'exit_price': t.exit_price,
