@@ -63,8 +63,8 @@ class AnalyticsQueries:
                 pnl,
                 pnl_percent,
                 entry_time,
-                exit_date,
-                reason,
+                exit_time,
+                exit_reason,
                 confidence
             FROM trades
             WHERE session_id = %s
@@ -89,8 +89,8 @@ class AnalyticsQueries:
                 pnl,
                 pnl_percent,
                 entry_time,
-                exit_date,
-                reason,
+                exit_time,
+                exit_reason,
                 confidence
             FROM trades
             ORDER BY entry_time DESC
@@ -210,8 +210,8 @@ class AnalyticsQueries:
         # Formatear fechas
         if 'entry_time' in df.columns:
             df['entry_time'] = pd.to_datetime(df['entry_time'])
-        if 'exit_date' in df.columns:
-            df['exit_date'] = pd.to_datetime(df['exit_date'])
+        if 'exit_time' in df.columns:
+            df['exit_time'] = pd.to_datetime(df['exit_time'])
         
         # Generar filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -241,8 +241,8 @@ class AnalyticsQueries:
         # Formatear fechas
         if 'entry_time' in df.columns:
             df['entry_time'] = pd.to_datetime(df['entry_time'])
-        if 'exit_date' in df.columns:
-            df['exit_date'] = pd.to_datetime(df['exit_date'])
+        if 'exit_time' in df.columns:
+            df['exit_time'] = pd.to_datetime(df['exit_time'])
         
         # Generar filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -298,8 +298,8 @@ class AnalyticsQueries:
                 trades_df = pd.DataFrame(trades)
                 if 'entry_time' in trades_df.columns:
                     trades_df['entry_time'] = pd.to_datetime(trades_df['entry_time'])
-                if 'exit_date' in trades_df.columns:
-                    trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'])
+                if 'exit_time' in trades_df.columns:
+                    trades_df['exit_time'] = pd.to_datetime(trades_df['exit_time'])
                 trades_df.to_excel(writer, sheet_name='Trades', index=False)
             
             # Hoja 3: Estadísticas
@@ -353,28 +353,28 @@ class AnalyticsQueries:
         if session_id:
             query = """
                 SELECT 
-                    DATE(exit_date) as trade_date,
+                    DATE(exit_time) as trade_date,
                     COUNT(*) as trades,
                     SUM(pnl) as daily_pnl,
                     SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                     SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses
                 FROM trades
-                WHERE session_id = %s AND exit_date IS NOT NULL
-                GROUP BY DATE(exit_date)
+                WHERE session_id = %s AND exit_time IS NOT NULL
+                GROUP BY DATE(exit_time)
                 ORDER BY trade_date DESC
             """
             params = (session_id,)
         else:
             query = """
                 SELECT 
-                    DATE(exit_date) as trade_date,
+                    DATE(exit_time) as trade_date,
                     COUNT(*) as trades,
                     SUM(pnl) as daily_pnl,
                     SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                     SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses
                 FROM trades
-                WHERE exit_date IS NOT NULL
-                GROUP BY DATE(exit_date)
+                WHERE exit_time IS NOT NULL
+                GROUP BY DATE(exit_time)
                 ORDER BY trade_date DESC
             """
             params = None

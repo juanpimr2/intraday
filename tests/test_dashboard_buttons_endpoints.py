@@ -114,18 +114,32 @@ class _FakeAnalytics:
         return [{"ts_utc": "2025-09-01T10:00:00Z", "equity": 10000.0, "cash": 9700.0, "open_positions": 1}]
 
 
-class _FakeController:
+class _FakeBotState:
     def __init__(self):
         self.running = False
+        self.manual_override = False
+        self.last_command = None
 
-    def start_bot(self):
+    def start(self):
         self.running = True
+        self.manual_override = False
+        self.last_command = "START"
 
-    def stop_bot(self):
+    def stop(self):
         self.running = False
+        self.manual_override = True
+        self.last_command = "STOP"
 
     def get_status(self):
-        return {"running": self.running, "manual_override": False, "last_command": None}
+        return {
+            "running": self.running, 
+            "manual_override": self.manual_override, 
+            "last_command": self.last_command,
+            "last_heartbeat": None
+        }
+    
+    def is_running(self):
+        return self.running
 
 
 class _FakeBacktestEngine:
@@ -167,12 +181,12 @@ def _patch_dependencies(tmp_path, monkeypatch):
     """
     fake_api = _FakeAPI()
     fake_analytics = _FakeAnalytics(tmp_path)
-    fake_controller = _FakeController()
+    fake_bot_state = _FakeBotState()
 
     # get_api_client / get_analytics / get_bot_controller → stubs
     monkeypatch.setattr(appmod, "get_api_client", lambda: fake_api)
     monkeypatch.setattr(appmod, "get_analytics", lambda: fake_analytics)
-    monkeypatch.setattr(appmod, "get_bot_controller", lambda: fake_controller)
+    monkeypatch.setattr(appmod, "get_bot_controller", lambda: fake_bot_state)
 
     # BacktestEngine → stub
     monkeypatch.setattr(appmod, "BacktestEngine", _FakeBacktestEngine)
