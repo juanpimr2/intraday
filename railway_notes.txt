@@ -1,0 +1,7 @@
+﻿import os
+
+# Añadir al inicio del archivo
+PORT = int(os.getenv('PORT', 5000))
+
+# Cambiar la línea donde se inicia el dashboard:
+# dashboard.run(host='0.0.0.0', port=PORT, debug=False)

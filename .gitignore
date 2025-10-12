@@ -200,4 +200,12 @@ postgres_data/
 pgadmin_data/
 
 # Logs
-*.log
+*.log__pycache__/
+*.pyc
+.env
+logs/
+exports/
+*.db
+*.sqlite3
+venv/
+.vscode/
