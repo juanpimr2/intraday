@@ -9,14 +9,14 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from api.capital_api import CapitalAPI
+from api.capital_client import CapitalClient
 from strategies.intraday_strategy import IntradayStrategy
 from indicators.technical import TechnicalIndicators
 from database.database_manager import DatabaseManager
 from trading.core.bot_orchestrator import BotOrchestrator
 from utils.bot_controller import BotController
 from utils.bot_state import BotState
-from utils.logger_manager import setup_logging
+from utils.logger_manager import SessionLogger
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -28,8 +28,8 @@ class TradingBot:
     def __init__(self):
         """Inicializa el bot con configuración mínima"""
         self.config = Config
-        self.api = CapitalAPI()
-        self.strategy = IntradayStrategy(self.config)
+        self.api = CapitalClient()
+        self.strategy = IntradayStrategy()
         self.indicators = TechnicalIndicators()
         self.db_manager = DatabaseManager()
         self.controller = BotController()
@@ -45,8 +45,8 @@ class TradingBot:
         try:
             # Setup logging
             self.session_name = datetime.now().strftime("[%d_%b_%Y] Sesion %H%M%S")
-            log_dir = Path(f"logs/{self.session_name}")
-            setup_logging(log_dir, self.session_name)
+            self.session_logger = SessionLogger()
+            self.session_logger.setup_session_logging(self.session_name)
             
             logger.info("="*60)
             logger.info("BOT INTRADAY TRADING - v7.0 REFACTORIZADO")
